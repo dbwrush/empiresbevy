@@ -1,12 +1,13 @@
 use bevy::prelude::*;
-use noise::{NoiseFn, Perlin};
+use noise::{NoiseFn, Simplex};
 use rand::Rng;
 use rayon::prelude::*;
 use std::time::Instant;
 
-const WIDTH: usize = 300;
-const HEIGHT: usize = 300;
-const VARIABLES: usize = 3; // Example: 0 = terrain, 1 = empire, 2 =  strength
+const WIDTH: usize = 720;
+const HEIGHT: usize = 480;
+const VARIABLES: usize = 3; // Example: 0 = terrain, 1 = empire, 2 = strength
+const OCEAN_CUTOFF: f32 = 0.4;
 
 fn main() {
     let mut app = App::new();
@@ -74,22 +75,60 @@ impl Grid {
     fn new(width: usize, height: usize, variables: usize) -> Self {
         let mut data = vec![vec![vec![0.0; variables]; height]; width];
         let mut rng = rand::thread_rng();
-        let perlin = Perlin::new(rng.gen::<u32>());
+        let noise = Simplex::new(rng.gen::<u32>()); //Billow<_> = Billow::new(rng.gen::<u32>());
+        let noise2 = Simplex::new(rng.gen::<u32>());
+        let noise3 = Simplex::new(rng.gen::<u32>());
+        
         data.par_iter_mut().enumerate().for_each(|(x, row)| {
             row.iter_mut().enumerate().for_each(|(y, cell)| {
-                let elevation = perlin.get([x as f64 / 10.0, y as f64 / 10.0]) as f32;
-                cell[0] = elevation;
+                let elevation = noise.get([x as f64 / 100.0, y as f64 / 100.0]) as f32 + noise2.get([x as f64 / 50.0, y as f64 / 50.0]) as f32 / 2.0 + noise3.get([x as f64 / 25.0, y as f64 / 25.0]) as f32 / 4.0;
+                cell[0] = (elevation + 1.0) / 2.0;
+                cell[1] = -1.0;
             });
         });
+
+        for _ in 0..100 {
+            let x = rng.gen_range(0..WIDTH);
+            let y = rng.gen_range(0..HEIGHT);
+            if data[x][y][0] >= OCEAN_CUTOFF {
+                data[x][y][1] = rng.gen_range(0.0..100.0);
+            }
+        }
 
         Grid { data }
     }
 
     fn update(&mut self) {
         self.data.par_iter_mut().for_each(|row| {
-            row.iter_mut().for_each(|cell| {
+            row.iter_mut().for_each(|cell| {//strength phase
+                if cell[1] != -1.0 {
+                    cell[2] += 1.0 - (OCEAN_CUTOFF - cell[0]).abs();
+                    cell[2] *= 0.99;
+                }
+            });
+        });
+        self.data.par_iter_mut().for_each(|row| {
+            row.iter_mut().for_each(|cell| {//attack phase
                 // Update cell logic here
-                cell[0] = (cell[0] + 1.0) % 2.0; // Example update
+                // Example update
+            });
+        });
+        self.data.par_iter_mut().for_each(|row| {
+            row.iter_mut().for_each(|cell| {//need phase
+                // Update cell logic here
+                // Example update
+            });
+        });
+        self.data.par_iter_mut().for_each(|row| {
+            row.iter_mut().for_each(|cell| {//need spread phase
+                // Update cell logic here
+                // Example update
+            });
+        });
+        self.data.par_iter_mut().for_each(|row| {
+            row.iter_mut().for_each(|cell| {//resource phase
+                // Update cell logic here
+                // Example update
             });
         });
     }
@@ -122,20 +161,20 @@ fn update_colors(
         let cell = &grid.data[x][y];
 
         let color = if cell[1] == -1.0 || matches!(*render_mode, RenderMode::TerrainView) {
-            if cell[0] < 0.5 {
+            if cell[0] < OCEAN_CUTOFF {
                 //ocean
-                let brightness = cell[0] * 2.0;
-                Color::hsla(240.0 / 360.0, 1.0, brightness, 1.0)
+                let brightness = cell[0] / 2.0 + OCEAN_CUTOFF / 2.0;//cell[0] + 0.01 / (cell[0].sqrt());
+                Color::hsla(240.0, 1.0, brightness, 1.0)
             } else {
                 //land
-                let brightness = (cell[0] - 0.5) * 2.0;
-                Color::hsla(120.0 / 360.0, 1.0, brightness, 1.0)
+                let brightness = cell[0] / 3.0 + OCEAN_CUTOFF / 3.0;
+                Color::hsla(100.0 + (cell[0] - 0.5) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0, brightness, 1.0)
             }
         } else {
             match *render_mode {
                 RenderMode::StrengthView => {
                     let hue = cell[1] / 10.0;
-                    let brightness = cell[2] / 10.0;
+                    let brightness = cell[2];
                     Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 RenderMode::EmpireView => {
