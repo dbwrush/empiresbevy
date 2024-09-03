@@ -1,8 +1,8 @@
-use bevy::{prelude::*, utils::HashMap};
+use bevy::{ecs::observer::TriggerTargets, prelude::*, utils::HashMap};
 use noise::{NoiseFn, Simplex};
 use rand::Rng;
 use rayon::prelude::*;
-use std::time::Instant;
+use std::{borrow::BorrowMut, time::Instant};
 
 const WIDTH: usize = 426;
 const HEIGHT: usize = 240;
@@ -17,11 +17,11 @@ fn main() {
     app.add_systems(Update, pull_system);
     app.add_systems(PostUpdate, push_system);
     app.insert_resource(RenderMode::StrengthView);
-    app.insert_resource(CellMap(HashMap::default()));
+    app.insert_resource(EntityMap(HashMap::default()));
     app.run();
 }
 
-fn setup(mut commands: Commands, windows: Query<&mut Window>, mut cell_map: ResMut<CellMap>) {
+fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: ResMut<EntityMap>) {
     let window_width = windows.iter().next().unwrap().width();
     let window_height = windows.iter().next().unwrap().height();
     let scale_x = WIDTH as f32 / window_width;
@@ -68,10 +68,18 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut cell_map: ResM
                 ..Default::default()
             });
             if terrain > OCEAN_CUTOFF {
-                let entity = commands.spawn(Cell::new(x, y)).id();
-                cell_map.0.insert((x, y), entity);
+                let entity = commands.spawn((
+                    Cell::new(x, y),
+                    Empire(-1),
+                    Strength(0.0),
+                    Need(0.0),
+                    SendTarget(0, 0),
+                    SendAmount(0.0),
+                    SendEmpire(-1),
+                    Terrain(terrain),
+                )).id();
+                entity_map.0.insert((x, y), entity);
             }
-
         }
     }
 
@@ -79,7 +87,7 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut cell_map: ResM
 }
 
 #[derive(Resource)]
-struct CellMap(HashMap<(usize, usize), Entity>);
+struct EntityMap(HashMap<(usize, usize), Entity>);
 
 #[derive(Resource)]
 struct Grid {
@@ -107,32 +115,94 @@ impl Grid {
 }
 
 #[derive(Component)]
-struct Cell {
-    empire: i32,
-    strength: f32,
-    need: f32,
-    position: (usize, usize),
-    send_amount: f32,
-    send_target: (usize, usize),
-    send_empire: i32, //this is the empire which commits an attack, in case a cell changes hands while it has already committed forces to an attack
-    //send_empire should be updated to the owner of the cell during the push phase.
-    //consider adding a pointer to all land neighbors (ignore ocean since no entities are made for ocean)
-}
+struct Empire(i32);
+
+#[derive(Component)]
+struct Strength(f32);
+
+#[derive(Component)]
+struct Need(f32);
+
+#[derive(Component)]
+struct SendTarget(usize, usize);
+
+#[derive(Component)]
+struct SendAmount(f32);
+
+#[derive(Component)]
+struct SendEmpire(i32);
+
+#[derive(Component)]
+struct Terrain(f32);
+
+#[derive(Component)]
+struct Cell(usize, usize);
 
 impl Cell {
     fn new(x: usize, y: usize) -> Self {
-        Cell {
-            empire: -1,
-            strength: 0.0,
-            need: 0.0,
-            position: (x, y),
-            send_amount: 0.0,
-            send_target: (0, 0),
-            send_empire: -1,
-        }
+        Cell(x, y)
     }
 
-    fn push(&mut self, neighbors: &HashMap<(usize, usize), Entity>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
+    //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
+    fn push(&mut self, neighbors: &HashMap<(usize, usize), Entity>, query : &Query<(&Empire, &Strength, &Need)>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
+        let entity = neighbors.get(&(self.0, self.1)).unwrap();
+        let (empire, mut strength, mut need) = query.get(*entity).unwrap();
+        let mut send_target = (0, 0);
+        let mut send_amount = 0.0;
+        let mut send_empire = empire.0;
+        let mut max_enemy_strength = 0.0;
+        let mut max_need = 0.0;
+        let mut max_need_position = (0, 0);
+        let mut total_need = 0.0;
+        let mut local_need = 0.0;
+        let mut min_enemy_strength = 0.0;
+        let mut min_enemy_position = (0, 0);
+        //iterate through the 8 possible neighbor positions
+        for x in self.0 - 1..self.0 + 1 {
+            for y in self.1 - 1..self.1 + 1 {
+                if x == self.0 && y == self.1 {
+                    continue;
+                }
+                if let Some(neighbor) = neighbors.get(&(x, y)) {
+                    let (n_empire, n_strength, n_need) = query.get(*neighbor).unwrap();
+                    if empire.0 == n_empire.0 {
+                        if n_need.0 > max_need {
+                            max_need = n_need.0;
+                            max_need_position = (x, y);
+                        }
+                        total_need += n_need.0;
+                    } else {
+                        if n_strength.0 > max_enemy_strength {
+                            max_enemy_strength = n_strength.0;
+                        }
+                        if n_strength.0 < min_enemy_strength {
+                            min_enemy_strength = n_strength.0;
+                            min_enemy_position = (x, y);
+                        }
+                        local_need += (n_strength.0 / 3.0);
+                    }
+                }
+            }
+        }
+        if strength.0 > local_need {
+            //safe from attack this turn
+            let mut extra = strength.0 - total_need;
+            if max_need > 0.0 {
+                //send strength to cell with max need
+                (send_target.0, send_target.1) = (max_need_position.0, max_need_position.1);
+                send_amount = (strength.0 - total_need).min(max_need);
+                send_empire = empire.0;
+                extra -= send_amount;
+            }
+            if extra > 3.0 * min_enemy_strength {
+                //send strength to attack weakest enemy
+                (send_target.0, send_target.1) = min_enemy_position;
+                send_amount = extra;
+                send_empire = empire.0;
+            }
+        }
+        let final_need = need.0 * 0.9 + total_need + local_need;
+
         // Read need, strength, and owner data from neighbors (no need for it to be mutable), use it to decide if a cell should hold, send reinforcements,
         // or attack a neighbor
         // Cells need 3x strength to win an attack, so they can afford to have 1/3 the strength of the strongest enemy neighbor
@@ -154,15 +224,15 @@ impl Cell {
     }
 }
 
-fn push_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
+fn push_system(mut query: Query<&mut Cell>, entity_map: Res<EntityMap>, mut data : Query<(&Empire, &Strength, &Need)>) {
     query.par_iter_mut().for_each(|mut cell| {
-        cell.push(&cell_map.0);
+        cell.push(&entity_map.0, &data);
     });
 }
 
-fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
+fn pull_system(mut query: Query<&mut Cell>, entity_map: Res<EntityMap>) {
     query.par_iter_mut().for_each(|mut cell| {
-        cell.pull(&cell_map.0);
+        cell.pull(&entity_map.0);
     });
 }
 
