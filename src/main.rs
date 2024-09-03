@@ -201,6 +201,7 @@ impl Cell {
                 send_empire = empire.0;
             }
         }
+        let final_strength = strength.0 - send_amount;
         let final_need = need.0 * 0.9 + total_need + local_need;
 
         // Read need, strength, and owner data from neighbors (no need for it to be mutable), use it to decide if a cell should hold, send reinforcements,
