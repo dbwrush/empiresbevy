@@ -204,12 +204,7 @@ impl Cell {
         let final_strength = strength.0 - send_amount;
         let final_need = need.0 * 0.9 + total_need + local_need;
 
-        // Read need, strength, and owner data from neighbors (no need for it to be mutable), use it to decide if a cell should hold, send reinforcements,
-        // or attack a neighbor
-        // Cells need 3x strength to win an attack, so they can afford to have 1/3 the strength of the strongest enemy neighbor
-        // If strength is > 0.3x the strongest enemy neighbor, it can survive attacks, extra strength can be sent as attacks or reinforcements
-        // Check neighboring friendly (same empire) cells for need, send extra strength to them first in order of need
-        // Check neighboring enemy cells for strength, if extra strength is > 0.3x the weakest enemy then attack the weakest enemy
+        //from here, we want to write final_strength, final_need, send_amount, send_target, and send_empire to the entity's components.
     }
 
     fn pull(&mut self, neighbors: &HashMap<(usize, usize), Entity>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
