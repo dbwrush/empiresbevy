@@ -1,8 +1,8 @@
-use bevy::{ecs::observer::TriggerTargets, prelude::*, utils::HashMap};
+use bevy::{prelude::*, scene::ron::de, utils::HashMap};
 use noise::{NoiseFn, Simplex};
 use rand::Rng;
 use rayon::prelude::*;
-use std::{borrow::BorrowMut, time::Instant};
+use std::time::Instant;
 
 const WIDTH: usize = 426;
 const HEIGHT: usize = 240;
@@ -55,6 +55,7 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
     commands.insert_resource(LastDraw::default());
 
     // Initialize sprites
+    let mut empire_count = 0;
     for x in 0..WIDTH {
         for y in 0..HEIGHT {
             let terrain = grid.data[x][y][0];
@@ -68,15 +69,15 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
                 ..Default::default()
             });
             if terrain > OCEAN_CUTOFF {
+                // chance to spawn an empire using cell.set_empire()
+                let mut empire = -1;
+                if rand::thread_rng().gen_range(0..10000) < 1 {
+                    empire = empire_count;
+                    empire_count += 1;
+                }
+
                 let entity = commands.spawn((
-                    Cell::new(x, y),
-                    Empire(-1),
-                    Strength(0.0),
-                    Need(0.0),
-                    SendTarget(0, 0),
-                    SendAmount(0.0),
-                    SendEmpire(-1),
-                    Terrain(terrain),
+                    Cell::new(x, y, terrain, empire),
                 )).id();
                 entity_map.0.insert((x, y), entity);
             }
@@ -115,96 +116,93 @@ impl Grid {
 }
 
 #[derive(Component)]
-struct Empire(i32);
-
-#[derive(Component)]
-struct Strength(f32);
-
-#[derive(Component)]
-struct Need(f32);
-
-#[derive(Component)]
-struct SendTarget(usize, usize);
-
-#[derive(Component)]
-struct SendAmount(f32);
-
-#[derive(Component)]
-struct SendEmpire(i32);
-
-#[derive(Component)]
-struct Terrain(f32);
-
-#[derive(Component)]
-struct Cell(usize, usize);
+struct Cell {
+    position: (usize, usize),
+    empire: i32,
+    strength: f32,
+    need: f32,
+    send_target: (usize, usize),
+    send_amount: f32,
+    send_empire: i32,
+    terrain: f32,
+}
 
 impl Cell {
-    fn new(x: usize, y: usize) -> Self {
-        Cell(x, y)
+    fn new(x: usize, y: usize, terrain: f32, empire: i32) -> Self {
+        Cell {            
+            position: (x, y),
+            empire: empire,
+            strength: 0.0,
+            need: 0.0,
+            send_target: (0, 0),
+            send_amount: 0.0,
+            send_empire: empire,
+            terrain,
+        }
+    }
+
+    fn set_empire(&mut self, empire: i32) {
+        self.empire = empire;
     }
 
     //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
-    fn push(&mut self, neighbors: &HashMap<(usize, usize), Entity>, query : &Query<(&Empire, &Strength, &Need)>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
-        let entity = neighbors.get(&(self.0, self.1)).unwrap();
-        let (empire, mut strength, mut need) = query.get(*entity).unwrap();
-        let mut send_target = (0, 0);
-        let mut send_amount = 0.0;
-        let mut send_empire = empire.0;
+    fn push(&mut self, neighbors: &HashMap<(usize, usize), Entity>, query : &Query<&Cell>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
         let mut max_enemy_strength = 0.0;
         let mut max_need = 0.0;
         let mut max_need_position = (0, 0);
         let mut total_need = 0.0;
-        let mut local_need = 0.0;
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = (0, 0);
         //iterate through the 8 possible neighbor positions
-        for x in self.0 - 1..self.0 + 1 {
-            for y in self.1 - 1..self.1 + 1 {
-                if x == self.0 && y == self.1 {
+        for x in self.position.0 - 1..self.position.0 + 1 {
+            for y in self.position.1 - 1..self.position.1 + 1 {
+                if x == self.position.0 && y == self.position.1 {
                     continue;
                 }
                 if let Some(neighbor) = neighbors.get(&(x, y)) {
-                    let (n_empire, n_strength, n_need) = query.get(*neighbor).unwrap();
-                    if empire.0 == n_empire.0 {
-                        if n_need.0 > max_need {
-                            max_need = n_need.0;
+                    let neighbor_cell = query.get(*neighbor).unwrap();
+                    if self.empire == neighbor_cell.empire {
+                        if neighbor_cell.need > max_need {
+                            max_need = neighbor_cell.need;
                             max_need_position = (x, y);
                         }
-                        total_need += n_need.0;
+                        total_need += neighbor_cell.need;
                     } else {
-                        if n_strength.0 > max_enemy_strength {
-                            max_enemy_strength = n_strength.0;
+                        if neighbor_cell.strength > max_enemy_strength {
+                            max_enemy_strength = neighbor_cell.strength;
                         }
-                        if n_strength.0 < min_enemy_strength {
-                            min_enemy_strength = n_strength.0;
+                        if neighbor_cell.strength < min_enemy_strength {
+                            min_enemy_strength = neighbor_cell.strength;
                             min_enemy_position = (x, y);
                         }
-                        local_need += (n_strength.0 / 3.0);
+                        self.need += neighbor_cell.strength / 3.0;
                     }
                 }
             }
         }
-        if strength.0 > local_need {
+        if self.strength > self.need {
             //safe from attack this turn
-            let mut extra = strength.0 - total_need;
+            let mut extra = self.strength - total_need;
             if max_need > 0.0 {
                 //send strength to cell with max need
-                (send_target.0, send_target.1) = (max_need_position.0, max_need_position.1);
-                send_amount = (strength.0 - total_need).min(max_need);
-                send_empire = empire.0;
-                extra -= send_amount;
+                (self.send_target.0, self.send_target.1) = (max_need_position.0, max_need_position.1);
+                self.send_amount = (self.strength - total_need).min(max_need);
+                self.send_empire = self.empire;
+                extra -= self.send_amount;
             }
             if extra > 3.0 * min_enemy_strength {
                 //send strength to attack weakest enemy
-                (send_target.0, send_target.1) = min_enemy_position;
-                send_amount = extra;
-                send_empire = empire.0;
+                (self.send_target.0, self.send_target.1) = min_enemy_position;
+                self.send_amount = extra;
+                self.send_empire = self.empire;
             }
+        } else {
+            self.send_target = self.position;
+            self.send_amount = 0.0;
+            self.send_empire = self.empire;
         }
-        let final_strength = strength.0 - send_amount;
-        let final_need = need.0 * 0.9 + total_need + local_need;
-
-        //from here, we want to write final_strength, final_need, send_amount, send_target, and send_empire to the entity's components.
+        self.strength -= self.send_amount;
+        self.need = self.need + total_need / 2.0;
     }
 
     fn pull(&mut self, neighbors: &HashMap<(usize, usize), Entity>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -220,9 +218,9 @@ impl Cell {
     }
 }
 
-fn push_system(mut query: Query<&mut Cell>, entity_map: Res<EntityMap>, mut data : Query<(&Empire, &Strength, &Need)>) {
+fn push_system(mut query: Query<&mut Cell>,entity_map: Res<EntityMap>, data : &Query<&Cell>) {
     query.par_iter_mut().for_each(|mut cell| {
-        cell.push(&entity_map.0, &data);
+        cell.push(&entity_map.0, data);
     });
 }
 
