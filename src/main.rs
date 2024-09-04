@@ -183,9 +183,9 @@ impl Cell {
                 }
             }
         }
-        println!("Empire {} has strength {} and need {} at ({}, {})", self.empire, self.strength, self.need, self.position.0, self.position.1);
+        //println!("Empire {} has strength {} and need {} at ({}, {})", self.empire, self.strength, self.need, self.position.0, self.position.1);
         if self.strength > self.need {
-            println!("Empire {} has enough strength to send reinforcements or attacks", self.empire);
+            //println!("Empire {} has enough strength to send reinforcements or attacks", self.empire);
             //safe from attack this turn
             let mut extra = self.strength - total_need;
             if max_need > 0.0 && max_need_position != self.position {
@@ -194,16 +194,16 @@ impl Cell {
                 self.send_amount = (self.strength - total_need).min(max_need);
                 self.send_empire = self.empire;
                 extra -= self.send_amount;
-                println!("Empire {} is sending {} reinforcements to cell ({}, {})", self.empire, self.send_amount, self.send_target.0, self.send_target.1);
+                //println!("Empire {} is sending {} reinforcements to cell ({}, {})", self.empire, self.send_amount, self.send_target.0, self.send_target.1);
             }
-            println!("Extra is {}, {} required", extra, (3.0 * min_enemy_strength));
-            println!("Position is ({}, {}), this cell is at ({}, {})", min_enemy_position.0, min_enemy_position.1, self.position.0, self.position.1);
+            //println!("Extra is {}, {} required", extra, (3.0 * min_enemy_strength));
+            //println!("Position is ({}, {}), this cell is at ({}, {})", min_enemy_position.0, min_enemy_position.1, self.position.0, self.position.1);
             if extra > 3.0 * min_enemy_strength && min_enemy_position != self.position {
                 //send strength to attack weakest enemy
                 (self.send_target.0, self.send_target.1) = min_enemy_position;
                 self.send_amount = extra;
                 self.send_empire = self.empire;
-                println!("Empire {} is attacking cell ({}, {}) with {} strength", self.empire, self.send_target.0, self.send_target.1, self.send_amount);
+                //println!("Empire {} is attacking cell ({}, {}) with {} strength", self.empire, self.send_target.0, self.send_target.1, self.send_amount);
             }
         } else {
             self.send_target = self.position;
@@ -227,7 +227,7 @@ impl Cell {
         // If an attack causes strength to go below 0, change this cell's owner to the attacking empire and multiply strength by -1, all further attacks will be considered reinforcements
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
-                if neighbor_cell.6 != self.empire && neighbor_cell.4 == self.position {
+                if neighbor_cell.6 != self.empire && neighbor_cell.4 == self.position && neighbor_cell.1 != -1 {
                     println!("Empire {} is attacking cell ({}, {})", neighbor_cell.6, self.position.0, self.position.1);
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
                         self.empire = neighbor_cell.6;
