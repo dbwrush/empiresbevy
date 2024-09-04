@@ -16,14 +16,14 @@ fn main() {
     app.add_plugins(DefaultPlugins);
     app.add_systems(Startup, setup);
     app.add_systems(Update, (update_colors, draw_fps));
-    app.add_systems(Update, pull_system);
-    app.add_systems(PostUpdate, push_system);
+    app.add_systems(PreUpdate, (pull_system.before(update_cell_map_system), update_cell_map_system));
+    app.add_systems(PostUpdate, (push_system.before(update_cell_map_system), update_cell_map_system));
     app.insert_resource(RenderMode::StrengthView);
-    app.insert_resource(EntityMap(HashMap::default()));
+    app.insert_resource(CellMap(HashMap::default()));
     app.run();
 }
 
-fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: ResMut<EntityMap>) {
+fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: ResMut<CellMap>) {
     let window_width = windows.iter().next().unwrap().width();
     let window_height = windows.iter().next().unwrap().height();
     let scale_x = WIDTH as f32 / window_width;
@@ -78,10 +78,8 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
                     empire_count += 1;
                 }
 
-                let entity = commands.spawn((
-                    Cell::new(x, y, terrain, empire),
-                )).id();
-                entity_map.0.insert((x, y), entity);
+                commands.spawn(Cell::new(x, y, terrain, empire));
+                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire));
             }
         }
     }
@@ -90,7 +88,7 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
 }
 
 #[derive(Resource)]
-struct EntityMap(HashMap<(usize, usize), Entity>);
+struct CellMap(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>);
 
 #[derive(Resource)]
 struct Grid {
@@ -143,8 +141,13 @@ impl Cell {
         }
     }
 
+    fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32) {
+        //0 = position, 1 = empire, 2 = strength, 3 = need, 4 = send_target, 5 = send_amount, 6 = send_empire
+        (self.position, self.empire, self.strength, self.need, self.send_target, self.send_amount, self.send_empire)
+    }
+
     //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
-    fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32)>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
+    fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
         let mut max_enemy_strength = 0.0;
         let mut max_need = 0.0;
         let mut max_need_position = (0, 0);
@@ -197,36 +200,67 @@ impl Cell {
         self.need = self.need + total_need / 2.0;
     }
 
-    fn pull(&mut self, neighbors: &HashMap<(usize, usize), Entity>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
+    fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
         // Check the send_ variables of all neighbors to see if they are sending strength to this cell
-        // First add reinforcements from friendly cells to this cell's strength
+        for i in 0..data.len() {// First add reinforcements from friendly cells to this cell's strength
+            if let Some(neighbor_cell) = data.get(i) {
+                if neighbor_cell.6 == self.empire && neighbor_cell.4 == self.position {
+                    self.strength += neighbor_cell.5;
+                }
+            }
+        }
         // Then divide incoming strength from enemy cells by 3 and subtract it from this cell's strength. Handle attacks from weakest to strongest.
         // If an attack causes strength to go below 0, change this cell's owner to the attacking empire and multiply strength by -1, all further attacks will be considered reinforcements
-
-        // Update cell data in the grid for rendering.
-
+        for i in 0..data.len() {
+            if let Some(neighbor_cell) = data.get(i) {
+                if neighbor_cell.6 != self.empire && neighbor_cell.4 == self.position {
+                    if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
+                        self.empire = neighbor_cell.6;
+                        println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
+                        self.strength = neighbor_cell.5 / 3.0 - self.strength;
+                    } else {
+                        self.strength -= neighbor_cell.5 / 3.0;
+                    }
+                }
+            }
+        }
         // Use terrain data from the grid to determine how much strength this cell should generate. The closer to ocean level, the more strength is made.
+        self.strength += self.terrain;
         // Multiply strength by 0.99 so it can't just go up forever.
+        self.strength *= 0.99;
     }
 }
 
-fn push_system(mut query: Query<&mut Cell>,entity_map: Res<EntityMap>, cells : Query<&Cell>) {
-    query.iter_mut().for_each(|mut cell| {
-        cell.position = cells.get(entity_map.0[&cell.position]).unwrap().position;
-        let mut data = Vec::new();
-        for i in 0..8 {
-            if let Some(neighbor) = entity_map.0.get(&(cell.position.0 + i % 3 - 1, cell.position.1 + i / 3 - 1)) {
-                let neighbor_cell = cells.get(*neighbor).unwrap();
-                data.push((neighbor_cell.position.clone(), neighbor_cell.empire.clone(), neighbor_cell.strength.clone(), neighbor_cell.need.clone()));
+fn push_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
+    query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
+        let position = cell.position;//get cell's position
+        let mut data = Vec::new();//initialize data to be sent to cell.push
+        for i in 0..8 {//iterate through the 8 possible neighbor positions
+            if let Some(neighbor) = cell_map.0.get(&(position.0 + i % 3 - 1, position.1 + i / 3 - 1)) {
+                data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
             }
         }
         cell.push(data);
     });
 }
 
-fn pull_system(mut query: Query<&mut Cell>, entity_map: Res<EntityMap>) {
-    query.par_iter_mut().for_each(|mut cell| {
-        cell.pull(&entity_map.0);
+//iterate through all cells, run the get() function on them to update CellMap
+fn update_cell_map_system(mut cell_map: ResMut<CellMap>, query: Query<&Cell>) {
+    query.iter().for_each(|cell| {
+        cell_map.0.insert(cell.position, cell.get());
+    });
+}
+
+fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
+    query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
+        let position = cell.position;//get cell's position
+        let mut data = Vec::new();//initialize data to be sent to cell.push
+        for i in 0..8 {//iterate through the 8 possible neighbor positions
+            if let Some(neighbor) = cell_map.0.get(&(position.0 + i % 3 - 1, position.1 + i / 3 - 1)) {
+                data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
+            }
+        }
+        cell.pull(data);
     });
 }
 
