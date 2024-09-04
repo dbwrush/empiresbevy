@@ -280,6 +280,7 @@ enum RenderMode {
 
 fn update_colors(
     grid: Res<Grid>,
+    cell_map: Res<CellMap>,
     render_mode: Res<RenderMode>,
     mut query: Query<(&Transform, &mut Sprite)>,
 ) {
@@ -290,27 +291,34 @@ fn update_colors(
     query_results.par_iter_mut().for_each(|(transform,ref mut sprite)| {
         let x = transform.translation.x as usize;
         let y = transform.translation.y as usize;
-        let cell = &grid.data[x][y];
+        let terrain = &grid.data[x][y];
 
-        let color = if cell[1] == -1.0 || matches!(*render_mode, RenderMode::TerrainView) {
-            if cell[0] < OCEAN_CUTOFF {
+        //some grid spots don't have cells because they are ocean
+        //check if a cell exists at this position before trying to access it
+        //let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1));
+
+        let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1));
+
+        let color = if terrain[1] == -1.0 || matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
+            if terrain[0] < OCEAN_CUTOFF {
                 //ocean
-                let brightness = cell[0] / 2.0 + OCEAN_CUTOFF / 2.0;//cell[0] + 0.01 / (cell[0].sqrt());
+                let brightness = terrain[0] / 2.0 + OCEAN_CUTOFF / 2.0;//cell[0] + 0.01 / (cell[0].sqrt());
                 Color::hsla(240.0, 1.0, brightness, 1.0)
             } else {
                 //land
-                let brightness = cell[0] / 3.0 + OCEAN_CUTOFF / 3.0;
-                Color::hsla(100.0 + (cell[0] - 0.5) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0, brightness, 1.0)
+                let brightness = terrain[0] / 3.0 + OCEAN_CUTOFF / 3.0;
+                Color::hsla(100.0 + (terrain[0] - 0.5) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0, brightness, 1.0)
             }
         } else {
+            println!("Empire {} has strength {} and need {} at ({}, {})", cell.1, cell.2, cell.3, x, y);
             match *render_mode {
                 RenderMode::StrengthView => {
-                    let hue = cell[1] / 10.0;
-                    let brightness = cell[2];
+                    let hue = cell.1 as f32 / 10.0;
+                    let brightness = cell.2 as f32 / 10.0;
                     Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 RenderMode::EmpireView => {
-                    let hue = cell[1] / 10.0;
+                    let hue = cell.1 as f32 / 10.0;
                     Color::hsla(hue, 1.0, 0.5, 1.0)
                 }
                 _ => Color::WHITE,
