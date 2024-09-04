@@ -1,8 +1,9 @@
-use bevy::{prelude::*, scene::ron::de, utils::HashMap};
+use bevy::{prelude::*, utils::HashMap};
 use noise::{NoiseFn, Simplex};
 use rand::Rng;
 use rayon::prelude::*;
 use std::time::Instant;
+use std::env;
 
 const WIDTH: usize = 426;
 const HEIGHT: usize = 240;
@@ -10,6 +11,7 @@ const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
 
 fn main() {
+    env::set_var("RUST_BACKTRACE", "full");
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
     app.add_systems(Startup, setup);
@@ -141,12 +143,8 @@ impl Cell {
         }
     }
 
-    fn set_empire(&mut self, empire: i32) {
-        self.empire = empire;
-    }
-
     //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
-    fn push(&mut self, neighbors: &HashMap<(usize, usize), Entity>, query : &Query<&Cell>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
+    fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32)>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
         let mut max_enemy_strength = 0.0;
         let mut max_need = 0.0;
         let mut max_need_position = (0, 0);
@@ -154,29 +152,23 @@ impl Cell {
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = (0, 0);
         //iterate through the 8 possible neighbor positions
-        for x in self.position.0 - 1..self.position.0 + 1 {
-            for y in self.position.1 - 1..self.position.1 + 1 {
-                if x == self.position.0 && y == self.position.1 {
-                    continue;
-                }
-                if let Some(neighbor) = neighbors.get(&(x, y)) {
-                    let neighbor_cell = query.get(*neighbor).unwrap();
-                    if self.empire == neighbor_cell.empire {
-                        if neighbor_cell.need > max_need {
-                            max_need = neighbor_cell.need;
-                            max_need_position = (x, y);
-                        }
-                        total_need += neighbor_cell.need;
-                    } else {
-                        if neighbor_cell.strength > max_enemy_strength {
-                            max_enemy_strength = neighbor_cell.strength;
-                        }
-                        if neighbor_cell.strength < min_enemy_strength {
-                            min_enemy_strength = neighbor_cell.strength;
-                            min_enemy_position = (x, y);
-                        }
-                        self.need += neighbor_cell.strength / 3.0;
+        for i in 0..data.len() {
+            if let Some(neighbor_cell) = data.get(i) {
+                if self.empire == neighbor_cell.1 {
+                    if neighbor_cell.3 > max_need {
+                        max_need = neighbor_cell.3;
+                        max_need_position = neighbor_cell.0;
                     }
+                    total_need += neighbor_cell.3;
+                } else {
+                    if neighbor_cell.2 > max_enemy_strength {
+                        max_enemy_strength = neighbor_cell.2;
+                    }
+                    if neighbor_cell.2 < min_enemy_strength {
+                        min_enemy_strength = neighbor_cell.2;
+                        min_enemy_position = neighbor_cell.0;
+                    }
+                    self.need += neighbor_cell.2 / 3.0;
                 }
             }
         }
@@ -218,9 +210,17 @@ impl Cell {
     }
 }
 
-fn push_system(mut query: Query<&mut Cell>,entity_map: Res<EntityMap>, data : &Query<&Cell>) {
-    query.par_iter_mut().for_each(|mut cell| {
-        cell.push(&entity_map.0, data);
+fn push_system(mut query: Query<&mut Cell>,entity_map: Res<EntityMap>, cells : Query<&Cell>) {
+    query.iter_mut().for_each(|mut cell| {
+        cell.position = cells.get(entity_map.0[&cell.position]).unwrap().position;
+        let mut data = Vec::new();
+        for i in 0..8 {
+            if let Some(neighbor) = entity_map.0.get(&(cell.position.0 + i % 3 - 1, cell.position.1 + i / 3 - 1)) {
+                let neighbor_cell = cells.get(*neighbor).unwrap();
+                data.push((neighbor_cell.position.clone(), neighbor_cell.empire.clone(), neighbor_cell.strength.clone(), neighbor_cell.need.clone()));
+            }
+        }
+        cell.push(data);
     });
 }
 
