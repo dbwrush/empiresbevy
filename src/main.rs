@@ -73,9 +73,10 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
             if terrain > OCEAN_CUTOFF {
                 // chance to spawn an empire using cell.set_empire()
                 let mut empire = -1;
-                if rand::thread_rng().gen_range(0..10000) < 1 {
+                if rand::thread_rng().gen_range(0..1000) < 1 {
                     empire = empire_count;
                     empire_count += 1;
+                    println!("Empire {} has been created at ({}, {})", empire, x, y);
                 }
 
                 commands.spawn(Cell::new(x, y, terrain, empire));
@@ -134,7 +135,7 @@ impl Cell {
             empire: empire,
             strength: 0.0,
             need: 0.0,
-            send_target: (0, 0),
+            send_target: (x, y),
             send_amount: 0.0,
             send_empire: empire,
             terrain,
@@ -154,6 +155,11 @@ impl Cell {
         let mut total_need = 0.0;
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = (0, 0);
+
+        if self.empire == -1 {
+            return;
+        }
+
         //iterate through the 8 possible neighbor positions
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
@@ -216,7 +222,7 @@ impl Cell {
                 if neighbor_cell.6 != self.empire && neighbor_cell.4 == self.position {
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
                         self.empire = neighbor_cell.6;
-                        println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
+                        //println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
                         self.strength = neighbor_cell.5 / 3.0 - self.strength;
                     } else {
                         self.strength -= neighbor_cell.5 / 3.0;
