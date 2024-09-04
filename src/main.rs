@@ -18,7 +18,7 @@ fn main() {
     app.add_systems(Update, (update_colors, draw_fps));
     app.add_systems(PreUpdate, (pull_system.before(update_cell_map_system), update_cell_map_system));
     app.add_systems(PostUpdate, (push_system.before(update_cell_map_system), update_cell_map_system));
-    app.insert_resource(RenderMode::StrengthView);
+    app.insert_resource(RenderMode::EmpireView);
     app.insert_resource(CellMap(HashMap::default()));
     app.run();
 }
@@ -151,14 +151,16 @@ impl Cell {
     fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
         let mut max_enemy_strength = 0.0;
         let mut max_need = 0.0;
-        let mut max_need_position = (0, 0);
+        let mut max_need_position = self.position;
         let mut total_need = 0.0;
         let mut min_enemy_strength = 0.0;
-        let mut min_enemy_position = (0, 0);
+        let mut min_enemy_position = self.position;
 
         if self.empire == -1 {
             return;
         }
+
+        //println!("Empire {} has strength {} and need {} at ({}, {})", self.empire, self.strength, self.need, self.position.0, self.position.1);
 
         //iterate through the 8 possible neighbor positions
         for i in 0..data.len() {
@@ -168,12 +170,12 @@ impl Cell {
                         max_need = neighbor_cell.3;
                         max_need_position = neighbor_cell.0;
                     }
-                    total_need += neighbor_cell.3;
+                    total_need += neighbor_cell.3 / 2.0;
                 } else {
                     if neighbor_cell.2 > max_enemy_strength {
                         max_enemy_strength = neighbor_cell.2;
                     }
-                    if neighbor_cell.2 < min_enemy_strength {
+                    if neighbor_cell.2 < min_enemy_strength || min_enemy_position == self.position {
                         min_enemy_strength = neighbor_cell.2;
                         min_enemy_position = neighbor_cell.0;
                     }
@@ -181,21 +183,27 @@ impl Cell {
                 }
             }
         }
+        println!("Empire {} has strength {} and need {} at ({}, {})", self.empire, self.strength, self.need, self.position.0, self.position.1);
         if self.strength > self.need {
+            println!("Empire {} has enough strength to send reinforcements or attacks", self.empire);
             //safe from attack this turn
             let mut extra = self.strength - total_need;
-            if max_need > 0.0 {
+            if max_need > 0.0 && max_need_position != self.position {
                 //send strength to cell with max need
                 (self.send_target.0, self.send_target.1) = (max_need_position.0, max_need_position.1);
                 self.send_amount = (self.strength - total_need).min(max_need);
                 self.send_empire = self.empire;
                 extra -= self.send_amount;
+                println!("Empire {} is sending {} reinforcements to cell ({}, {})", self.empire, self.send_amount, self.send_target.0, self.send_target.1);
             }
-            if extra > 3.0 * min_enemy_strength {
+            println!("Extra is {}, {} required", extra, (3.0 * min_enemy_strength));
+            println!("Position is ({}, {}), this cell is at ({}, {})", min_enemy_position.0, min_enemy_position.1, self.position.0, self.position.1);
+            if extra > 3.0 * min_enemy_strength && min_enemy_position != self.position {
                 //send strength to attack weakest enemy
                 (self.send_target.0, self.send_target.1) = min_enemy_position;
                 self.send_amount = extra;
                 self.send_empire = self.empire;
+                println!("Empire {} is attacking cell ({}, {}) with {} strength", self.empire, self.send_target.0, self.send_target.1, self.send_amount);
             }
         } else {
             self.send_target = self.position;
@@ -203,7 +211,7 @@ impl Cell {
             self.send_empire = self.empire;
         }
         self.strength -= self.send_amount;
-        self.need = self.need + total_need / 2.0;
+        self.need = self.need + total_need;
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -220,9 +228,10 @@ impl Cell {
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
                 if neighbor_cell.6 != self.empire && neighbor_cell.4 == self.position {
+                    println!("Empire {} is attacking cell ({}, {})", neighbor_cell.6, self.position.0, self.position.1);
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
                         self.empire = neighbor_cell.6;
-                        //println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
+                        println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
                         self.strength = neighbor_cell.5 / 3.0 - self.strength;
                     } else {
                         self.strength -= neighbor_cell.5 / 3.0;
@@ -230,10 +239,12 @@ impl Cell {
                 }
             }
         }
-        // Use terrain data from the grid to determine how much strength this cell should generate. The closer to ocean level, the more strength is made.
-        self.strength += self.terrain;
-        // Multiply strength by 0.99 so it can't just go up forever.
-        self.strength *= 0.99;
+        if self.empire != -1 {
+            // Use terrain data from the grid to determine how much strength this cell should generate. The closer to ocean level, the more strength is made.
+            self.strength += self.terrain;
+            // Multiply strength by 0.99 so it can't just go up forever.
+            self.strength *= 0.99;
+        }
     }
 }
 
@@ -299,7 +310,7 @@ fn update_colors(
 
         let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1));
 
-        let color = if terrain[1] == -1.0 || matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
+        let color = if matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
             if terrain[0] < OCEAN_CUTOFF {
                 //ocean
                 let brightness = terrain[0] / 2.0 + OCEAN_CUTOFF / 2.0;//cell[0] + 0.01 / (cell[0].sqrt());
@@ -310,15 +321,15 @@ fn update_colors(
                 Color::hsla(100.0 + (terrain[0] - 0.5) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0, brightness, 1.0)
             }
         } else {
-            println!("Empire {} has strength {} and need {} at ({}, {})", cell.1, cell.2, cell.3, x, y);
+            //println!("Empire {} has strength {} and need {} at ({}, {})", cell.1, cell.2, cell.3, x, y);
             match *render_mode {
                 RenderMode::StrengthView => {
-                    let hue = cell.1 as f32 / 10.0;
+                    let hue = cell.1 as f32 / 70.0 * 360.0;
                     let brightness = cell.2 as f32 / 10.0;
                     Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 RenderMode::EmpireView => {
-                    let hue = cell.1 as f32 / 10.0;
+                    let hue = cell.1 as f32  / 70.0 * 360.0;
                     Color::hsla(hue, 1.0, 0.5, 1.0)
                 }
                 _ => Color::WHITE,
