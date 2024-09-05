@@ -5,10 +5,12 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 360;
-const HEIGHT: usize = 240;
+const WIDTH: usize = 240;
+const HEIGHT: usize = 120;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
+const MAX_AGE: u32 = 10000;
+const EMPIRE_PROBABILITY: i32 = 1000;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -73,14 +75,14 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
             if terrain > OCEAN_CUTOFF {
                 // chance to spawn an empire using cell.set_empire()
                 let mut empire = -1;
-                if rand::thread_rng().gen_range(0..10) < 1 {
+                if rand::thread_rng().gen_range(0..EMPIRE_PROBABILITY) < 1 {
                     empire = empire_count;
                     empire_count += 1;
                     println!("Empire {} has been created at ({}, {})", empire, x, y);
                 }
 
                 commands.spawn(Cell::new(x, y, terrain, empire));
-                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, 0));
+                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, MAX_AGE));
             }
         }
     }
@@ -218,8 +220,12 @@ impl Cell {
                 if neighbor_cell.6 != self.empire && neighbor_cell.4 == self.position && neighbor_cell.1 != -1 {
                     //println!("Empire {} is attacking cell ({}, {}) from ({}, {})", neighbor_cell.6, self.position.0, self.position.1, neighbor_cell.0.0, neighbor_cell.0.1);
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
+                        if self.empire == -1 {
+                            self.age = MAX_AGE;
+                        } else {
+                            self.age = 0;
+                        }
                         self.empire = neighbor_cell.6;
-                        self.age = 0;
                         //println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
                         self.strength = neighbor_cell.5 / 3.0 - self.strength;
                     } else {
@@ -230,9 +236,9 @@ impl Cell {
         }
         if self.empire != -1 {
             // Use terrain data from the grid to determine how much strength this cell should generate. The closer to ocean level, the more strength is made.
-            self.strength += self.terrain;
+            self.strength += 1.0 - (OCEAN_CUTOFF - self.terrain).abs();
             // Multiply strength by 0.99 so it can't just go up forever.
-            self.strength *= 0.9;
+            self.strength *= 1.0 - (OCEAN_CUTOFF - self.terrain).abs();
             self.need *= 0.9;
             self.age += 1;
         }
@@ -364,7 +370,7 @@ fn update_colors(
                 }
                 RenderMode::AgeView => {
                     let hue = cell.1 as f32  / 70.0 * 360.0;
-                    let brightness = (cell.7 as f32 / 10000.0).min(0.5);
+                    let brightness = (cell.7 as f32 / MAX_AGE as f32).min(0.5);
                     Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 _ => Color::WHITE,
