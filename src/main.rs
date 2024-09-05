@@ -1,3 +1,4 @@
+use bevy::ui::update;
 use bevy::{prelude::*, utils::HashMap};
 use noise::{NoiseFn, Simplex};
 use rand::Rng;
@@ -5,8 +6,8 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 426;
-const HEIGHT: usize = 240;
+const WIDTH: usize = 219;
+const HEIGHT: usize = 100;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
 
@@ -15,10 +16,10 @@ fn main() {
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
     app.add_systems(Startup, setup);
-    app.add_systems(Update, (update_colors, draw_fps));
+    app.add_systems(Update, (update_colors, draw_fps, update_render_mode_system));
     app.add_systems(PreUpdate, (pull_system.before(update_cell_map_system), update_cell_map_system));
     app.add_systems(PostUpdate, (push_system.before(update_cell_map_system), update_cell_map_system));
-    app.insert_resource(RenderMode::EmpireView);
+    app.insert_resource(RenderMode::NeedView);
     app.insert_resource(CellMap(HashMap::default()));
     app.run();
 }
@@ -158,7 +159,6 @@ impl Cell {
         self.send_target = self.position;
         self.send_amount = 0.0;
         self.send_empire = self.empire;
-        self.need = 0.0;
 
         if self.empire == -1 {
             return;
@@ -169,6 +169,9 @@ impl Cell {
         //iterate through the 8 possible neighbor positions
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
+                if neighbor_cell.1 == self.empire {
+                    continue;
+                }
                 if self.empire == neighbor_cell.1 {
                     //println!("Neighbor cell position is ({}, {}), local is ({}, {})", neighbor_cell.0.0, neighbor_cell.0.1, self.position.0, self.position.1);
                     if neighbor_cell.3 > max_need {
@@ -176,7 +179,7 @@ impl Cell {
                         max_need_position = neighbor_cell.0;
                     }
                     //println!("Neighbor friendly cell empire is {}, local is {} need is {}, or {}", neighbor_cell.1, self.empire, neighbor_cell.3, neighbor_cell.3 / 2.0);
-                    total_need += neighbor_cell.3 / 2.0;
+                    total_need += neighbor_cell.3;
                 } else {
                     if neighbor_cell.2 > max_enemy_strength {
                         max_enemy_strength = neighbor_cell.2;
@@ -220,7 +223,7 @@ impl Cell {
         }
         self.strength -= self.send_amount;
         //println!("Empire {} has need {} and is adding {} total need", self.empire, self.need, total_need);
-        self.need = self.need + total_need - self.strength;
+        self.need = (self.need - self.strength).max(0.0) + total_need;
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -252,7 +255,8 @@ impl Cell {
             // Use terrain data from the grid to determine how much strength this cell should generate. The closer to ocean level, the more strength is made.
             self.strength += self.terrain;
             // Multiply strength by 0.99 so it can't just go up forever.
-            self.strength *= 0.99;
+            self.strength *= 0.9;
+            self.need *= 0.9;
         }
     }
 }
@@ -302,7 +306,24 @@ enum RenderMode {
     StrengthView,
     EmpireView,
     TerrainView,
+    NeedView,
     // Add more render modes here
+}
+
+fn set_render_mode(mode: RenderMode, mut render_mode: ResMut<RenderMode>) {
+    *render_mode = mode;
+}
+
+fn update_render_mode_system(keyboard_input: Res<ButtonInput<KeyCode>>, mut render_mode: ResMut<RenderMode>) {
+    if keyboard_input.just_pressed(KeyCode::Digit1) {
+        *render_mode = RenderMode::EmpireView;
+    } else if keyboard_input.just_pressed(KeyCode::Digit2) {
+        *render_mode = RenderMode::StrengthView;
+    } else if keyboard_input.just_pressed(KeyCode::Digit3) {
+        *render_mode = RenderMode::NeedView;
+    } else if keyboard_input.just_pressed(KeyCode::Digit4) {
+        *render_mode = RenderMode::TerrainView;
+    }
 }
 
 fn update_colors(
@@ -347,6 +368,11 @@ fn update_colors(
                 RenderMode::EmpireView => {
                     let hue = cell.1 as f32  / 70.0 * 360.0;
                     Color::hsla(hue, 1.0, 0.5, 1.0)
+                }
+                RenderMode::NeedView => {
+                    let hue = cell.1 as f32  / 70.0 * 360.0;
+                    let brightness = cell.3 as f32 / 10.0;
+                    Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 _ => Color::WHITE,
             }
