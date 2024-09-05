@@ -1,4 +1,3 @@
-use bevy::ui::update;
 use bevy::{prelude::*, utils::HashMap};
 use noise::{NoiseFn, Simplex};
 use rand::Rng;
@@ -6,8 +5,8 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 219;
-const HEIGHT: usize = 100;
+const WIDTH: usize = 360;
+const HEIGHT: usize = 240;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
 
@@ -74,14 +73,14 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
             if terrain > OCEAN_CUTOFF {
                 // chance to spawn an empire using cell.set_empire()
                 let mut empire = -1;
-                if rand::thread_rng().gen_range(0..1000) < 1 {
+                if rand::thread_rng().gen_range(0..500) < 1 {
                     empire = empire_count;
                     empire_count += 1;
                     println!("Empire {} has been created at ({}, {})", empire, x, y);
                 }
 
                 commands.spawn(Cell::new(x, y, terrain, empire));
-                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire));
+                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, 0));
             }
         }
     }
@@ -90,7 +89,7 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
 }
 
 #[derive(Resource)]
-struct CellMap(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>);
+struct CellMap(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32)>);
 
 #[derive(Resource)]
 struct Grid {
@@ -127,6 +126,7 @@ struct Cell {
     send_amount: f32,
     send_empire: i32,
     terrain: f32,
+    age: u32,
 }
 
 impl Cell {
@@ -140,12 +140,13 @@ impl Cell {
             send_amount: 0.0,
             send_empire: empire,
             terrain,
+            age: 0
         }
     }
 
-    fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32) {
+    fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32) {
         //0 = position, 1 = empire, 2 = strength, 3 = need, 4 = send_target, 5 = send_amount, 6 = send_empire
-        (self.position, self.empire, self.strength, self.need, self.send_target, self.send_amount, self.send_empire)
+        (self.position, self.empire, self.strength, self.need, self.send_target, self.send_amount, self.send_empire, self.age)
     }
 
     //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
@@ -153,9 +154,9 @@ impl Cell {
         let mut max_enemy_strength = 0.0;
         let mut max_need = 0.0;
         let mut max_need_position = self.position;
-        let mut total_need = 0.0;
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = self.position;
+        self.need = 0.0;
         self.send_target = self.position;
         self.send_amount = 0.0;
         self.send_empire = self.empire;
@@ -164,66 +165,41 @@ impl Cell {
             return;
         }
 
-        //println!("Empire {} has strength {} and need {} at ({}, {})", self.empire, self.strength, self.need, self.position.0, self.position.1);
-
-        //iterate through the 8 possible neighbor positions
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
-                if neighbor_cell.1 == self.empire {
+                if neighbor_cell.0 == self.position {
                     continue;
                 }
                 if self.empire == neighbor_cell.1 {
-                    //println!("Neighbor cell position is ({}, {}), local is ({}, {})", neighbor_cell.0.0, neighbor_cell.0.1, self.position.0, self.position.1);
-                    if neighbor_cell.3 > max_need {
+                   if neighbor_cell.3 > max_need {
                         max_need = neighbor_cell.3;
                         max_need_position = neighbor_cell.0;
                     }
-                    //println!("Neighbor friendly cell empire is {}, local is {} need is {}, or {}", neighbor_cell.1, self.empire, neighbor_cell.3, neighbor_cell.3 / 2.0);
-                    total_need += neighbor_cell.3;
                 } else {
                     if neighbor_cell.2 > max_enemy_strength {
                         max_enemy_strength = neighbor_cell.2;
+                        self.need += 3.0;
                     }
                     if neighbor_cell.2 < min_enemy_strength || min_enemy_position == self.position {
                         min_enemy_strength = neighbor_cell.2;
                         min_enemy_position = neighbor_cell.0;
+                        self.need += 1.0;
                     }
-                    //println!("Neighbor enemy cell strength is {}, local is {}, adding need {}, total now {}", neighbor_cell.2, self.strength, neighbor_cell.2 / 3.0, self.need + neighbor_cell.2 / 3.0);
-                    self.need += neighbor_cell.2 / 3.0;
                 }
             }
         }
-        //println!("Empire {} has strength {} and need {} at ({}, {})", self.empire, self.strength, self.need, self.position.0, self.position.1);
-        if self.strength > self.need {
-            //println!("Empire {} has enough strength to send reinforcements or attacks", self.empire);
-            //safe from attack this turn
-            let mut extra = self.strength - self.need;
-            if max_need > 0.0 && max_need_position != self.position {
-                //send strength to cell with max need
-                (self.send_target.0, self.send_target.1) = (max_need_position.0, max_need_position.1);
-                self.send_amount = (self.strength - self.need).min(max_need);
-                self.send_empire = self.empire;
-                extra -= self.send_amount;
-                //println!("Empire {} is sending {} reinforcements to cell ({}, {})", self.empire, self.send_amount, self.send_target.0, self.send_target.1);
-            }
-            //println!("Extra is {}, {} required", extra, (3.0 * min_enemy_strength));
-            //println!("Position is ({}, {}), this cell is at ({}, {})", min_enemy_position.0, min_enemy_position.1, self.position.0, self.position.1);
+       let extra = self.strength - max_enemy_strength / 3.0;
+        if extra > 0.0 {
             if extra > 3.0 * min_enemy_strength && min_enemy_position != self.position {
-                //send strength to attack weakest enemy
-                (self.send_target.0, self.send_target.1) = min_enemy_position;
+                self.send_target = min_enemy_position;
                 self.send_amount = extra;
-                self.send_empire = self.empire;
-                //println!("Empire {} is attacking cell ({}, {}) with {} strength", self.empire, self.send_target.0, self.send_target.1, self.send_amount);
+            } else if max_need > 0.0 && max_need_position != self.position{
+                (self.send_target.0, self.send_target.1) = (max_need_position.0, max_need_position.1);
+                self.send_amount = extra * 0.5;
             }
-        } else {
-            //println!("Empire {} does not have enough strength to send reinforcements or attacks, need is {}", self.empire, self.need);
-            self.send_target = self.position;
-            self.send_amount = 0.0;
-            self.send_empire = self.empire;
         }
+        self.need += max_need * 0.99;
         self.strength -= self.send_amount;
-        //println!("Empire {} has need {} and is adding {} total need", self.empire, self.need, total_need);
-        self.need = (self.need - self.strength).max(0.0) + total_need;
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -243,6 +219,7 @@ impl Cell {
                     //println!("Empire {} is attacking cell ({}, {}) from ({}, {})", neighbor_cell.6, self.position.0, self.position.1, neighbor_cell.0.0, neighbor_cell.0.1);
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
                         self.empire = neighbor_cell.6;
+                        self.age = 0;
                         //println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
                         self.strength = neighbor_cell.5 / 3.0 - self.strength;
                     } else {
@@ -257,6 +234,7 @@ impl Cell {
             // Multiply strength by 0.99 so it can't just go up forever.
             self.strength *= 0.9;
             self.need *= 0.9;
+            self.age += 1;
         }
     }
 }
@@ -268,9 +246,7 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
         let mut data = Vec::new();//initialize data to be sent to cell.push
         for i in 0..9 {//iterate through the 8 possible neighbor positions
             if let Some(neighbor) = cell_map.0.get(&(position.0 + i % 3 - 1, position.1 + i / 3 - 1)) {
-                if neighbor.0 != position {
-                    data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
-                }
+                data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
             }
         }
         //println!("Pushed {} neighbors to cell at ({}, {})", data.len(), position.0, position.1);
@@ -307,11 +283,9 @@ enum RenderMode {
     EmpireView,
     TerrainView,
     NeedView,
+    SendView,
+    AgeView,
     // Add more render modes here
-}
-
-fn set_render_mode(mode: RenderMode, mut render_mode: ResMut<RenderMode>) {
-    *render_mode = mode;
 }
 
 fn update_render_mode_system(keyboard_input: Res<ButtonInput<KeyCode>>, mut render_mode: ResMut<RenderMode>) {
@@ -323,6 +297,10 @@ fn update_render_mode_system(keyboard_input: Res<ButtonInput<KeyCode>>, mut rend
         *render_mode = RenderMode::NeedView;
     } else if keyboard_input.just_pressed(KeyCode::Digit4) {
         *render_mode = RenderMode::TerrainView;
+    } else if keyboard_input.just_pressed(KeyCode::Digit5) {
+        *render_mode = RenderMode::SendView;
+    } else if keyboard_input.just_pressed(KeyCode::Digit6) {
+        *render_mode = RenderMode::AgeView;
     }
 }
 
@@ -345,7 +323,7 @@ fn update_colors(
         //check if a cell exists at this position before trying to access it
         //let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1));
 
-        let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1));
+        let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1, 0));
 
         let color = if matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
             if terrain[0] < OCEAN_CUTOFF {
@@ -371,7 +349,22 @@ fn update_colors(
                 }
                 RenderMode::NeedView => {
                     let hue = cell.1 as f32  / 70.0 * 360.0;
-                    let brightness = cell.3 as f32 / 10.0;
+                    let brightness = cell.3 as f32 / 48.0;
+                    Color::hsla(hue, 1.0, brightness, 1.0)
+                }
+                RenderMode::SendView => {
+                    let lr = cell.4.0 - cell.0.0;
+                    let ud = cell.4.1 - cell.0.1;
+                    //lr and ud together are a vector of the direction the strength is being sent
+                    //hue should be the angle of the direction of that vector
+                    let angle = (lr as f32).atan2(ud as f32);
+                    let hue = angle * 180.0 / std::f32::consts::PI;
+                    let brightness = cell.5 as f32 / 10.0;
+                    Color::hsla(hue, 1.0, brightness, 1.0)
+                }
+                RenderMode::AgeView => {
+                    let hue = cell.1 as f32  / 70.0 * 360.0;
+                    let brightness = cell.7 as f32 / 1000.0;
                     Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 _ => Color::WHITE,
