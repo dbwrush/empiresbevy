@@ -132,8 +132,8 @@ impl Cell {
     fn new(x: usize, y: usize, terrain: f32, empire: i32) -> Self {
         Cell {            
             position: (x, y),
-            empire: empire,
-            strength: 0.0,
+            empire,
+            strength: terrain,
             need: 0.0,
             send_target: (x, y),
             send_amount: 0.0,
@@ -155,6 +155,10 @@ impl Cell {
         let mut total_need = 0.0;
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = self.position;
+        self.send_target = self.position;
+        self.send_amount = 0.0;
+        self.send_empire = self.empire;
+        self.need = 0.0;
 
         if self.empire == -1 {
             return;
@@ -166,10 +170,12 @@ impl Cell {
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
                 if self.empire == neighbor_cell.1 {
+                    //println!("Neighbor cell position is ({}, {}), local is ({}, {})", neighbor_cell.0.0, neighbor_cell.0.1, self.position.0, self.position.1);
                     if neighbor_cell.3 > max_need {
                         max_need = neighbor_cell.3;
                         max_need_position = neighbor_cell.0;
                     }
+                    //println!("Neighbor friendly cell empire is {}, local is {} need is {}, or {}", neighbor_cell.1, self.empire, neighbor_cell.3, neighbor_cell.3 / 2.0);
                     total_need += neighbor_cell.3 / 2.0;
                 } else {
                     if neighbor_cell.2 > max_enemy_strength {
@@ -179,6 +185,7 @@ impl Cell {
                         min_enemy_strength = neighbor_cell.2;
                         min_enemy_position = neighbor_cell.0;
                     }
+                    //println!("Neighbor enemy cell strength is {}, local is {}, adding need {}, total now {}", neighbor_cell.2, self.strength, neighbor_cell.2 / 3.0, self.need + neighbor_cell.2 / 3.0);
                     self.need += neighbor_cell.2 / 3.0;
                 }
             }
@@ -187,11 +194,11 @@ impl Cell {
         if self.strength > self.need {
             //println!("Empire {} has enough strength to send reinforcements or attacks", self.empire);
             //safe from attack this turn
-            let mut extra = self.strength - total_need;
+            let mut extra = self.strength - self.need;
             if max_need > 0.0 && max_need_position != self.position {
                 //send strength to cell with max need
                 (self.send_target.0, self.send_target.1) = (max_need_position.0, max_need_position.1);
-                self.send_amount = (self.strength - total_need).min(max_need);
+                self.send_amount = (self.strength - self.need).min(max_need);
                 self.send_empire = self.empire;
                 extra -= self.send_amount;
                 //println!("Empire {} is sending {} reinforcements to cell ({}, {})", self.empire, self.send_amount, self.send_target.0, self.send_target.1);
@@ -206,12 +213,14 @@ impl Cell {
                 //println!("Empire {} is attacking cell ({}, {}) with {} strength", self.empire, self.send_target.0, self.send_target.1, self.send_amount);
             }
         } else {
+            //println!("Empire {} does not have enough strength to send reinforcements or attacks, need is {}", self.empire, self.need);
             self.send_target = self.position;
             self.send_amount = 0.0;
             self.send_empire = self.empire;
         }
         self.strength -= self.send_amount;
-        self.need = self.need + total_need;
+        //println!("Empire {} has need {} and is adding {} total need", self.empire, self.need, total_need);
+        self.need = self.need + total_need - self.strength;
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -228,10 +237,10 @@ impl Cell {
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
                 if neighbor_cell.6 != self.empire && neighbor_cell.4 == self.position && neighbor_cell.1 != -1 {
-                    println!("Empire {} is attacking cell ({}, {})", neighbor_cell.6, self.position.0, self.position.1);
+                    //println!("Empire {} is attacking cell ({}, {}) from ({}, {})", neighbor_cell.6, self.position.0, self.position.1, neighbor_cell.0.0, neighbor_cell.0.1);
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
                         self.empire = neighbor_cell.6;
-                        println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
+                        //println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
                         self.strength = neighbor_cell.5 / 3.0 - self.strength;
                     } else {
                         self.strength -= neighbor_cell.5 / 3.0;
@@ -249,26 +258,33 @@ impl Cell {
 }
 
 fn push_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
+    //println!("Pushing");
     query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
-        for i in 0..8 {//iterate through the 8 possible neighbor positions
+        for i in 0..9 {//iterate through the 8 possible neighbor positions
             if let Some(neighbor) = cell_map.0.get(&(position.0 + i % 3 - 1, position.1 + i / 3 - 1)) {
-                data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
+                if neighbor.0 != position {
+                    data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
+                }
             }
         }
+        //println!("Pushed {} neighbors to cell at ({}, {})", data.len(), position.0, position.1);
         cell.push(data);
     });
+    //println!("Pushed");
 }
 
 //iterate through all cells, run the get() function on them to update CellMap
 fn update_cell_map_system(mut cell_map: ResMut<CellMap>, query: Query<&Cell>) {
+    //println!("Updating");
     query.iter().for_each(|cell| {
         cell_map.0.insert(cell.position, cell.get());
     });
 }
 
 fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
+    //println!("Pulling");
     query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
