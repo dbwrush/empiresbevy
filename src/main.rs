@@ -364,7 +364,7 @@ fn update_colors(
                 }
                 RenderMode::AgeView => {
                     let hue = cell.1 as f32  / 70.0 * 360.0;
-                    let brightness = (cell.7 as f32 / 10000.0).min(128.0);
+                    let brightness = (cell.7 as f32 / 10000.0).min(0.5);
                     Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 _ => Color::WHITE,
