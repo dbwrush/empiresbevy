@@ -73,7 +73,7 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
             if terrain > OCEAN_CUTOFF {
                 // chance to spawn an empire using cell.set_empire()
                 let mut empire = -1;
-                if rand::thread_rng().gen_range(0..500) < 1 {
+                if rand::thread_rng().gen_range(0..10) < 1 {
                     empire = empire_count;
                     empire_count += 1;
                     println!("Empire {} has been created at ({}, {})", empire, x, y);
@@ -268,7 +268,7 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
     query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
-        for i in 0..8 {//iterate through the 8 possible neighbor positions
+        for i in 0..9 {//iterate through the 8 possible neighbor positions
             if let Some(neighbor) = cell_map.0.get(&(position.0 + i % 3 - 1, position.1 + i / 3 - 1)) {
                 data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
             }
@@ -364,7 +364,7 @@ fn update_colors(
                 }
                 RenderMode::AgeView => {
                     let hue = cell.1 as f32  / 70.0 * 360.0;
-                    let brightness = cell.7 as f32 / 1000.0;
+                    let brightness = (cell.7 as f32 / 10000.0).min(128.0);
                     Color::hsla(hue, 1.0, brightness, 1.0)
                 }
                 _ => Color::WHITE,
