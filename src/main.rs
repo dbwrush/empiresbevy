@@ -5,8 +5,8 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 240;
-const HEIGHT: usize = 120;
+const WIDTH: usize = 480;
+const HEIGHT: usize = 240;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
 const MAX_AGE: u32 = 10000;
@@ -58,6 +58,8 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
 
     commands.insert_resource(LastDraw::default());
 
+    let mut count = 0;
+
     // Initialize sprites
     let mut empire_count = 0;
     for x in 0..WIDTH {
@@ -80,13 +82,14 @@ fn setup(mut commands: Commands, windows: Query<&mut Window>, mut entity_map: Re
                     empire_count += 1;
                     println!("Empire {} has been created at ({}, {})", empire, x, y);
                 }
+                count += 1;
 
                 commands.spawn(Cell::new(x, y, terrain, empire));
                 entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, MAX_AGE));
             }
         }
     }
-
+    println!("{} cells created", count);
     commands.insert_resource(grid);
 }
 
@@ -247,6 +250,11 @@ impl Cell {
 
 fn push_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
     //println!("Pushing");
+
+    //track start time of push
+    let start = Instant::now();
+
+
     query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
@@ -258,19 +266,33 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
         //println!("Pushed {} neighbors to cell at ({}, {})", data.len(), position.0, position.1);
         cell.push(data);
     });
+
+    //print time duration of push
+    println!("Push took {:?}", start.elapsed());
+
     //println!("Pushed");
 }
 
 //iterate through all cells, run the get() function on them to update CellMap
 fn update_cell_map_system(mut cell_map: ResMut<CellMap>, query: Query<&Cell>) {
+
+    //track start time of update
+    let start = Instant::now();
     //println!("Updating");
     query.iter().for_each(|cell| {
         cell_map.0.insert(cell.position, cell.get());
     });
+
+    //print time duration of update
+    println!("Update took {:?}", start.elapsed());
 }
 
 fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
     //println!("Pulling");
+
+    //track start time of pull
+    let start = Instant::now();
+
     query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
@@ -281,6 +303,9 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<CellMap>) {
         }
         cell.pull(data);
     });
+
+    //print time duration of pull
+    println!("Pull took {:?}", start.elapsed());
 }
 
 #[derive(Resource)]
