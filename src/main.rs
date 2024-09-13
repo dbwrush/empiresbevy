@@ -6,8 +6,8 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 30;
-const HEIGHT: usize = 9 * 30;
+const WIDTH: usize = 16 * 32;
+const HEIGHT: usize = 9 * 32;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.3;
 const EMPIRE_PROBABILITY: i32 = 1000;
@@ -260,7 +260,7 @@ impl Cell {
             self.strength += terrain_factor;
             // Multiply strength by 0.99 so it can't just go up forever.
             self.strength *= terrain_factor;
-            self.need *= 1.0 - (self.terrain * TERRAIN_IMPORTANCE / 1.5);
+            self.need *= 1.0 - (self.terrain * TERRAIN_IMPORTANCE / 1.3);
             self.age += 1;
         }
     }
