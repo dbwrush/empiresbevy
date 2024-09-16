@@ -8,3 +8,6 @@ bevy = "0.14.1"
 rayon = "1.10.0"
 noise = "0.9.0"
 rand = "0.8.4"
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-server-runner"

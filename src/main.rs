@@ -6,12 +6,13 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 32;
-const HEIGHT: usize = 9 * 32;
+const WIDTH: usize = 16 * 30;
+const HEIGHT: usize = 9 * 30;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.3;
 const EMPIRE_PROBABILITY: i32 = 1000;
 const TERRAIN_IMPORTANCE: f32 = 0.999;
+const LOOP_DIST: usize = 100;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -86,7 +87,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
                 if rand::thread_rng().gen_range(0..EMPIRE_PROBABILITY) < 1 {
                     empire = empire_count;
                     empire_count += 1;
-                    println!("Empire {} has been created at ({}, {})", empire, x, y);
+                    //println!("Empire {} has been created at ({}, {})", empire, x, y);
                     entity_map.1.push((rand::thread_rng().gen_range(0..360) as f32, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, 1.0));
                 }
                 count += 1;
@@ -124,9 +125,21 @@ impl Grid {
         let noise2 = Simplex::new(rng.gen::<u32>());
         let noise3 = Simplex::new(rng.gen::<u32>());
         
-        data.par_iter_mut().enumerate().for_each(|(x, row)| {
+        data.iter_mut().enumerate().for_each(|(x, row)| {
             row.iter_mut().enumerate().for_each(|(y, cell)| {
-                let elevation = noise.get([x as f64 / 200.0, y as f64 / 200.0]) as f32 * 2.0 + noise.get([x as f64 / 100.0, y as f64 / 100.0]) as f32 + noise2.get([x as f64 / 50.0, y as f64 / 50.0]) as f32 / 2.0 + noise3.get([x as f64 / 25.0, y as f64 / 25.0]) as f32 / 4.0 + noise3.get([x as f64 / 12.5, y as f64 / 12.5]) as f32 / 8.0;
+                let mut elevation = get_elevation(noise, noise2, noise3, x, y);
+                if x < LOOP_DIST || x > WIDTH - LOOP_DIST {
+                    println!("{} {} will be looped", x, y);
+                    //at the edge, terrain will be the average of this and the opposite side.
+                    let mut opp_prop = x as f32 / LOOP_DIST as f32 * -0.5 + 0.5;
+                    let opp_x = WIDTH - x - 1;
+                    if x > WIDTH - LOOP_DIST {
+                        opp_prop = opp_x as f32 / LOOP_DIST as f32 * -0.5 + 0.5;
+                    }
+                    println!("Opp prop: {}, Opp x: {}", opp_prop, opp_x);
+                    let opp_elevation = get_elevation(noise, noise2, noise3, opp_x, y);
+                    elevation = elevation * (1.0 - opp_prop) + opp_elevation * opp_prop;
+                }
                 cell[0] = (elevation + 1.0) / 2.0;
                 cell[1] = -1.0;
             });
@@ -134,6 +147,10 @@ impl Grid {
 
         Grid { data}
     }
+}
+
+fn get_elevation(noise: Simplex, noise2: Simplex, noise3: Simplex, x: usize, y: usize) -> f32 {
+    return noise.get([x as f64 / 200.0, y as f64 / 200.0]) as f32 * 2.0 + noise.get([x as f64 / 100.0, y as f64 / 100.0]) as f32 + noise2.get([x as f64 / 50.0, y as f64 / 50.0]) as f32 / 2.0 + noise3.get([x as f64 / 25.0, y as f64 / 25.0]) as f32 / 4.0 + noise3.get([x as f64 / 12.5, y as f64 / 12.5]) as f32 / 8.0;
 }
 
 #[derive(Component)]
