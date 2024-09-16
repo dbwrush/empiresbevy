@@ -129,14 +129,12 @@ impl Grid {
             row.iter_mut().enumerate().for_each(|(y, cell)| {
                 let mut elevation = get_elevation(noise, noise2, noise3, x, y);
                 if x < LOOP_DIST || x > WIDTH - LOOP_DIST {
-                    println!("{} {} will be looped", x, y);
                     //at the edge, terrain will be the average of this and the opposite side.
                     let mut opp_prop = x as f32 / LOOP_DIST as f32 * -0.5 + 0.5;
                     let opp_x = WIDTH - x - 1;
                     if x > WIDTH - LOOP_DIST {
                         opp_prop = opp_x as f32 / LOOP_DIST as f32 * -0.5 + 0.5;
                     }
-                    println!("Opp prop: {}, Opp x: {}", opp_prop, opp_x);
                     let opp_elevation = get_elevation(noise, noise2, noise3, opp_x, y);
                     elevation = elevation * (1.0 - opp_prop) + opp_elevation * opp_prop;
                 }
