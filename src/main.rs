@@ -13,6 +13,7 @@ const OCEAN_CUTOFF: f32 = 0.3;
 const EMPIRE_PROBABILITY: i32 = 1000;
 const TERRAIN_IMPORTANCE: f32 = 0.999;
 const LOOP_DIST: usize = 100;
+const BOAT_PROP: f32 = 0.0001;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -24,7 +25,7 @@ fn main() {
     app.add_systems(PostUpdate, (push_system.before(update_cell_map_system), update_cell_map_system));
     app.insert_resource(RenderMode::AgeView);
     app.insert_resource(GameData { max_strength: 0.0 , max_age: 0});
-    app.insert_resource(MapData(HashMap::default(), Vec::new()));
+    app.insert_resource(MapData(HashMap::default(), Vec::new(), Vec::new()));
     app.run();
 }
 
@@ -102,7 +103,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
 }
 
 #[derive(Resource)]
-struct MapData(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32)>, Vec<(f32, f32, f32, f32)>);
+struct MapData(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32)>, Vec<(f32, f32, f32, f32)>, Vec<Boat>);
 //vec is empire data including hue, saturation, aggression, and tech factor
 
 
@@ -151,6 +152,56 @@ fn get_elevation(noise: Simplex, noise2: Simplex, noise3: Simplex, x: usize, y: 
     return noise.get([x as f64 / 200.0, y as f64 / 200.0]) as f32 * 2.0 + noise.get([x as f64 / 100.0, y as f64 / 100.0]) as f32 + noise2.get([x as f64 / 50.0, y as f64 / 50.0]) as f32 / 2.0 + noise3.get([x as f64 / 25.0, y as f64 / 25.0]) as f32 / 4.0 + noise3.get([x as f64 / 12.5, y as f64 / 12.5]) as f32 / 8.0;
 }
 
+struct Boat {
+    position: (i32, i32),
+    direction: (f32, f32),
+    strength: f32,
+    empire: i32,
+}
+
+impl Boat {
+    fn move_boat(&mut self, mut grid: ResMut<MapData>) {
+        //use direction values to decide if boat moves on one axis or both randomly
+        //if direction value is negative, that means the boat is moving in the negative direction
+        if rand::thread_rng().gen_range(0..1000) as f32 / 1000.0 < self.direction.0.abs() {
+            if self.direction.0 > 0.0 {
+                self.position.0 += 1;
+            } else {
+                self.position.0 -= 1;
+            }
+        }
+        if rand::thread_rng().gen_range(0..1000) as f32 / 1000.0 < self.direction.1.abs() {
+            if self.direction.1 > 0.0 {
+                self.position.1 += 1;
+            } else {
+                self.position.1 -= 1;
+            }
+        }
+        if self.position.0 >= WIDTH as i32 {
+            self.position.0 -= WIDTH as i32;
+        }
+        if self.position.0 < 0 {
+            self.position.0 += WIDTH as i32;
+        }
+
+        //check if we've hit land
+        if let Some(cell) = grid.0.get_mut(&(self.position.0 as usize, self.position.1 as usize)) {
+            if cell.1 == self.empire {
+                //reinforce the cell
+                cell.2 += self.strength;
+            } else {
+                //attack the cell
+                if cell.2 * 3.0 - self.strength < 0.0 {
+                    cell.1 = self.empire;
+                    cell.2 = self.strength - cell.2 * 3.0;
+                } else {
+                    cell.2 -= self.strength / 3.0;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Component)]
 struct Cell {
     position: (usize, usize),
@@ -162,6 +213,7 @@ struct Cell {
     send_empire: i32,
     terrain: f32,
     age: u32,
+    ocean_need_prop: f32,
 }
 
 impl Cell {
@@ -175,7 +227,8 @@ impl Cell {
             send_amount: 0.0,
             send_empire: empire,
             terrain,
-            age: 0
+            age: 0,
+            ocean_need_prop: 0.0,
         }
     }
 
@@ -185,7 +238,7 @@ impl Cell {
     }
 
     //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
-    fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, aggression: f32) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
+    fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, aggression: f32, coastlines: usize) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
         let mut max_enemy_strength = 0.0;
         let mut max_need = 0.0;
         let mut max_need_position = self.position;
@@ -198,6 +251,8 @@ impl Cell {
 
         if self.empire == -1 {
             return;
+        } else {
+            self.need += coastlines as f32 / 8.0;
         }
 
         for i in 0..data.len() {
@@ -241,6 +296,7 @@ impl Cell {
         }
         self.need += max_need * 0.999999;
         self.strength -= self.send_amount;
+        self.ocean_need_prop = coastlines as f32 / self.need;
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, tech: f32) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -288,9 +344,10 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
     //let start = Instant::now();
 
 
-    query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
+    query.par_iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
+        let mut ocean = Vec::new();
         for i in 0..9 {//iterate through the 8 possible neighbor positions
             let mut neighbor_x:i32 = (position.0 as i32) + i % 3 - 1;
             let neighbor_y:i32 = (position.1 as i32) + i / 3 - 1;
@@ -306,8 +363,11 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
             if cell.position == (neighbor_x as usize, neighbor_y as usize) {
                 continue;
             }
-            if let Some(neighbor) = cell_map.0.get(&(neighbor_x as usize, neighbor_y as usize)) {
+            if let Some(neighbor) = cell_map.0.get(&(neighbor_x as usize, neighbor_y as usize)).clone() {
                 data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
+            } else {
+                //neighbor is in the map but isn't in the hashmap, so it's ocean
+                ocean.push((neighbor_x as usize, neighbor_y as usize));
             }
         }
         let mut aggression = 0.0;
@@ -315,7 +375,22 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
             aggression = cell_map.1[cell.empire as usize].2;
         }
         //println!("Pushed {} neighbors to cell at ({}, {})", data.len(), position.0, position.1);
-        cell.push(data, aggression);
+        cell.push(data, aggression, ocean.len());
+        /*if ocean_need_prop > BOAT_PROP {
+            if let Some(spawn_position) = ocean.get(rand::thread_rng().gen_range(0..ocean.len())) {
+                let direction = (
+                    (spawn_position.0 as i32 - position.0 as i32) as f32,
+                    (spawn_position.1 as i32 - position.1 as i32) as f32
+                );
+                let boat = Boat {
+                    position: (position.0 as i32, position.1 as i32),
+                    direction,
+                    strength: cell.strength * 0.1,
+                    empire: cell.empire,
+                };
+                cell_map.2.push(boat);
+            }
+        }*/
     });
 
     //print time duration of push
@@ -353,7 +428,7 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
     //track start time of pull
     //let start = Instant::now();
 
-    query.iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
+    query.par_iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
         for i in 0..9 {//iterate through the 8 possible neighbor positions
