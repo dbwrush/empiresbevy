@@ -292,10 +292,13 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
         for i in 0..9 {//iterate through the 8 possible neighbor positions
-            let mut neighbor_x:i32 = ((position.0 + i % 3 - 1) % WIDTH).try_into().unwrap();
-            let neighbor_y:i32 = ((position.1 + i / 3 - 1) % HEIGHT).try_into().unwrap();
+            let mut neighbor_x:i32 = (position.0 as i32) + i % 3 - 1;
+            let neighbor_y:i32 = (position.1 as i32) + i / 3 - 1;
             if neighbor_x < 0 {
                 neighbor_x += WIDTH as i32;
+            }
+            if neighbor_x >= WIDTH as i32 {
+                neighbor_x -= WIDTH as i32;
             }
             if (neighbor_y as usize) >= HEIGHT || neighbor_y < 0 {
                 continue;
@@ -303,7 +306,7 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
             if cell.position == (neighbor_x as usize, neighbor_y as usize) {
                 continue;
             }
-            if let Some(neighbor) = cell_map.0.get(&(position.0 + i % 3 - 1, position.1 + i / 3 - 1)) {
+            if let Some(neighbor) = cell_map.0.get(&(neighbor_x as usize, neighbor_y as usize)) {
                 data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
             }
         }
@@ -354,10 +357,13 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
         for i in 0..9 {//iterate through the 8 possible neighbor positions
-            let mut neighbor_x:i32 = ((position.0 + i % 3 - 1) % WIDTH).try_into().unwrap();
-            let neighbor_y:i32 = ((position.1 + i / 3 - 1) % HEIGHT).try_into().unwrap();
+            let mut neighbor_x:i32 = (position.0 as i32) + i % 3 - 1;
+            let neighbor_y:i32 = (position.1 as i32) + i / 3 - 1;
             if neighbor_x < 0 {
                 neighbor_x += WIDTH as i32;
+            }
+            if neighbor_x >= WIDTH as i32 {
+                neighbor_x -= WIDTH as i32;
             }
             if (neighbor_y as usize) >= HEIGHT || neighbor_y < 0 {
                 continue;
@@ -365,7 +371,7 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
             if cell.position == (neighbor_x as usize, neighbor_y as usize) {
                 continue;
             }
-            if let Some(neighbor) = cell_map.0.get(&(position.0 + i % 3 - 1, position.1 + i / 3 - 1)) {
+            if let Some(neighbor) = cell_map.0.get(&(neighbor_x as usize, neighbor_y as usize)) {
                 data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
             }
         }
