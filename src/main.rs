@@ -6,8 +6,8 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 30;
-const HEIGHT: usize = 9 * 30;
+const WIDTH: usize = 16 * 50;
+const HEIGHT: usize = 9 * 50;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.3;
 const EMPIRE_PROBABILITY: i32 = 1000;
@@ -395,10 +395,22 @@ fn update_cell_map_system(mut commands: Commands, mut cell_map: ResMut<MapData>,
     query.iter().for_each(|cell| {
         if game_data.send_boats && cell.empire != -1 && cell.boat_strength > 0.0 {
             let spawn_location = cell.boat_target;
-            let direction = (
+            let mut direction = (
                 (spawn_location.0 as i32 - cell.position.0 as i32) as f32,
                 (spawn_location.1 as i32 - cell.position.1 as i32) as f32
             );
+            if direction == (1.0, 1.0) {
+                direction = (0.5, 0.5);
+            }
+            if direction.0 > direction.1 {
+                let a = (rand::thread_rng().gen_range(0..500) as f32 / 1000.0 - 0.25) * direction.0;
+                direction.0 -= a;
+                direction.1 += a;
+            } else {
+                let a = (rand::thread_rng().gen_range(0..500) as f32 / 1000.0 - 0.25) * direction.1;
+                direction.1 -= a;
+                direction.0 += a;
+            }
             let boat = Boat {
                 direction,
                 strength: cell.boat_strength,
@@ -437,7 +449,7 @@ fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Bo
         if let Some(cell) = grid.0.get_mut(&(position.0 as usize, position.1 as usize)) {
             //add boat empire and strength to the vec at the end of the cell data
             cell.8.insert(position, (boat.empire, boat.strength));
-            println!("Boat has arrived at ({}, {})", position.0, position.1);
+            //println!("Boat has arrived at ({}, {})", position.0, position.1);
             //remove the boat
             commands.entity(entity).despawn();
             //let count = grid.0.get(&(position.0 as usize, position.1 as usize)).unwrap().8.len();
@@ -485,10 +497,10 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         }
         for (position, boat) in boat_data.iter() {
             data.push((*position, boat.0, boat.1, 0.0, *position, boat.1, boat.0));
-            println!("Added boat to data for cell at ({}, {})", position.0, position.1);
+            //println!("Added boat to data for cell at ({}, {})", position.0, position.1);
         }
         if boat_data.len() > 0 {
-            println!("This cell has recieved {} boats", boat_data.len());
+            //println!("This cell has recieved {} boats", boat_data.len());
         }
         let mut tech = 0.0;
         if cell.empire != -1 {
