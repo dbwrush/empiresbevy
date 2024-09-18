@@ -13,7 +13,7 @@ const OCEAN_CUTOFF: f32 = 0.3;
 const EMPIRE_PROBABILITY: i32 = 1000;
 const TERRAIN_IMPORTANCE: f32 = 0.999;
 const LOOP_DIST: usize = 100;
-const BOAT_PROP: f32 = 0.0001;
+const BOAT_PROP: f32 = 0.001;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -21,11 +21,11 @@ fn main() {
     app.add_plugins(DefaultPlugins);
     app.add_systems(Startup, setup);
     app.add_systems(Update, (update_colors, draw_fps, update_render_mode_system, update_empires));
-    app.add_systems(PreUpdate, (pull_system.before(update_cell_map_system), update_cell_map_system));
+    app.add_systems(PreUpdate, (update_boats_system.before(pull_system), pull_system.before(update_cell_map_system), update_cell_map_system));
     app.add_systems(PostUpdate, (push_system.before(update_cell_map_system), update_cell_map_system));
     app.insert_resource(RenderMode::AgeView);
-    app.insert_resource(GameData { max_strength: 0.0 , max_age: 0});
-    app.insert_resource(MapData(HashMap::default(), Vec::new(), Vec::new()));
+    app.insert_resource(GameData { max_strength: 0.0 , max_age: 0, send_boats: false });
+    app.insert_resource(MapData(HashMap::default(), Vec::new()));
     app.run();
 }
 
@@ -81,7 +81,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
                 },
                 transform: Transform::from_xyz(x as f32, y as f32, 0.0),
                 ..Default::default()
-            });
+            }).insert(CellMarker);
             if terrain > OCEAN_CUTOFF {
                 // chance to spawn an empire using cell.set_empire()
                 let mut empire = -1;
@@ -94,7 +94,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
                 count += 1;
 
                 commands.spawn(Cell::new(x, y, terrain, empire));
-                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, 0));
+                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, 0, HashMap::new()));
             }
         }
     }
@@ -103,7 +103,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
 }
 
 #[derive(Resource)]
-struct MapData(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32)>, Vec<(f32, f32, f32, f32)>, Vec<Boat>);
+struct MapData(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32, HashMap<(usize, usize), (i32, f32)>)>, Vec<(f32, f32, f32, f32)>);
 //vec is empire data including hue, saturation, aggression, and tech factor
 
 
@@ -111,6 +111,7 @@ struct MapData(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, u
 struct GameData {
     max_strength: f32,
     max_age: u32,
+    send_boats: bool,
 }
 
 #[derive(Resource)]
@@ -152,53 +153,41 @@ fn get_elevation(noise: Simplex, noise2: Simplex, noise3: Simplex, x: usize, y: 
     return noise.get([x as f64 / 200.0, y as f64 / 200.0]) as f32 * 2.0 + noise.get([x as f64 / 100.0, y as f64 / 100.0]) as f32 + noise2.get([x as f64 / 50.0, y as f64 / 50.0]) as f32 / 2.0 + noise3.get([x as f64 / 25.0, y as f64 / 25.0]) as f32 / 4.0 + noise3.get([x as f64 / 12.5, y as f64 / 12.5]) as f32 / 8.0;
 }
 
+#[derive(Component)]
+struct CellMarker;
+
+#[derive(Component)]
 struct Boat {
-    position: (i32, i32),
     direction: (f32, f32),
     strength: f32,
     empire: i32,
 }
 
 impl Boat {
-    fn move_boat(&mut self, mut grid: ResMut<MapData>) {
+    fn move_boat(&mut self, mut position: (i32, i32)) -> (usize, usize) {
         //use direction values to decide if boat moves on one axis or both randomly
         //if direction value is negative, that means the boat is moving in the negative direction
         if rand::thread_rng().gen_range(0..1000) as f32 / 1000.0 < self.direction.0.abs() {
             if self.direction.0 > 0.0 {
-                self.position.0 += 1;
+                position.0 += 1;
             } else {
-                self.position.0 -= 1;
+                position.0 -= 1;
             }
         }
         if rand::thread_rng().gen_range(0..1000) as f32 / 1000.0 < self.direction.1.abs() {
             if self.direction.1 > 0.0 {
-                self.position.1 += 1;
+                position.1 += 1;
             } else {
-                self.position.1 -= 1;
+                position.1 -= 1;
             }
         }
-        if self.position.0 >= WIDTH as i32 {
-            self.position.0 -= WIDTH as i32;
+        if position.0 >= WIDTH as i32 {
+            position.0 -= WIDTH as i32;
         }
-        if self.position.0 < 0 {
-            self.position.0 += WIDTH as i32;
+        if position.0 < 0 {
+            position.0 += WIDTH as i32;
         }
-
-        //check if we've hit land
-        if let Some(cell) = grid.0.get_mut(&(self.position.0 as usize, self.position.1 as usize)) {
-            if cell.1 == self.empire {
-                //reinforce the cell
-                cell.2 += self.strength;
-            } else {
-                //attack the cell
-                if cell.2 * 3.0 - self.strength < 0.0 {
-                    cell.1 = self.empire;
-                    cell.2 = self.strength - cell.2 * 3.0;
-                } else {
-                    cell.2 -= self.strength / 3.0;
-                }
-            }
-        }
+        return (position.0 as usize, position.1 as usize);
     }
 }
 
@@ -214,6 +203,8 @@ struct Cell {
     terrain: f32,
     age: u32,
     ocean_need_prop: f32,
+    boat_target: (usize, usize),
+    boat_strength: f32,
 }
 
 impl Cell {
@@ -229,16 +220,18 @@ impl Cell {
             terrain,
             age: 0,
             ocean_need_prop: 0.0,
+            boat_target: (0, 0),
+            boat_strength: 0.0,
         }
     }
 
-    fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32) {
+    fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32, HashMap<(usize, usize), (i32, f32)>) {
         //0 = position, 1 = empire, 2 = strength, 3 = need, 4 = send_target, 5 = send_amount, 6 = send_empire
-        (self.position, self.empire, self.strength, self.need, self.send_target, self.send_amount, self.send_empire, self.age)
+        (self.position, self.empire, self.strength, self.need, self.send_target, self.send_amount, self.send_empire, self.age, HashMap::new())
     }
 
     //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
-    fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, aggression: f32, coastlines: usize) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
+    fn push(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, aggression: f32, coastlines: Vec<(usize, usize)>) {//I call this 'push' because the cell is reading data from neighbors and pushing a decision
         let mut max_enemy_strength = 0.0;
         let mut max_need = 0.0;
         let mut max_need_position = self.position;
@@ -248,11 +241,12 @@ impl Cell {
         self.send_target = self.position;
         self.send_amount = 0.0;
         self.send_empire = self.empire;
+        self.boat_strength = 0.0;
 
         if self.empire == -1 {
             return;
         } else {
-            self.need += coastlines as f32 / 8.0;
+            self.need += coastlines.len() as f32 / 8.0;
         }
 
         for i in 0..data.len() {
@@ -296,11 +290,19 @@ impl Cell {
         }
         self.need += max_need * 0.999999;
         self.strength -= self.send_amount;
-        self.ocean_need_prop = coastlines as f32 / self.need;
+        self.ocean_need_prop = coastlines.len() as f32 / self.need;
+        if coastlines.len() > 0 && self.ocean_need_prop > 1.0 - BOAT_PROP && self.strength > 1.0 / BOAT_PROP {
+            self.boat_target = coastlines[rand::thread_rng().gen_range(0..coastlines.len())];
+            self.boat_strength = self.strength * self.ocean_need_prop;
+            self.strength -= self.boat_strength;
+        }
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, tech: f32) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
         // Check the send_ variables of all neighbors to see if they are sending strength to this cell
+        //self.empire = grid_data.0;
+        //self.strength = grid_data.1;
+
         for i in 0..data.len() {// First add reinforcements from friendly cells to this cell's strength
             if let Some(neighbor_cell) = data.get(i) {
                 if neighbor_cell.6 == self.empire && neighbor_cell.4 == self.position {
@@ -343,7 +345,6 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
     //track start time of push
     //let start = Instant::now();
 
-
     query.par_iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
@@ -375,22 +376,7 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
             aggression = cell_map.1[cell.empire as usize].2;
         }
         //println!("Pushed {} neighbors to cell at ({}, {})", data.len(), position.0, position.1);
-        cell.push(data, aggression, ocean.len());
-        /*if ocean_need_prop > BOAT_PROP {
-            if let Some(spawn_position) = ocean.get(rand::thread_rng().gen_range(0..ocean.len())) {
-                let direction = (
-                    (spawn_position.0 as i32 - position.0 as i32) as f32,
-                    (spawn_position.1 as i32 - position.1 as i32) as f32
-                );
-                let boat = Boat {
-                    position: (position.0 as i32, position.1 as i32),
-                    direction,
-                    strength: cell.strength * 0.1,
-                    empire: cell.empire,
-                };
-                cell_map.2.push(boat);
-            }
-        }*/
+        cell.push(data, aggression, ocean);
     });
 
     //print time duration of push
@@ -400,13 +386,34 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
 }
 
 //iterate through all cells, run the get() function on them to update CellMap
-fn update_cell_map_system(mut cell_map: ResMut<MapData>, mut game_data: ResMut<GameData>, query: Query<&Cell>) {
+fn update_cell_map_system(mut commands: Commands, mut cell_map: ResMut<MapData>, mut game_data: ResMut<GameData>, query: Query<&Cell>) {
     let mut max_strength = 0.0;
     let mut max_age = 0;
     //track start time of update
     //let start = Instant::now();
     //println!("Updating");
     query.iter().for_each(|cell| {
+        if game_data.send_boats && cell.empire != -1 && cell.boat_strength > 0.0 {
+            let spawn_location = cell.boat_target;
+            let direction = (
+                (spawn_location.0 as i32 - cell.position.0 as i32) as f32,
+                (spawn_location.1 as i32 - cell.position.1 as i32) as f32
+            );
+            let boat = Boat {
+                direction,
+                strength: cell.boat_strength,
+                empire: cell.empire,
+            };
+            commands.spawn(SpriteBundle {
+                sprite: Sprite {
+                    color: Color::hsla(cell_map.1[cell.empire as usize].0, cell_map.1[cell.empire as usize].1, 0.5, 1.0),
+                    custom_size: Some(Vec2::new(1.0, 1.0)),
+                    ..Default::default()
+                },
+                transform: Transform::from_xyz(spawn_location.0 as f32, spawn_location.1 as f32, 1.0),
+                ..Default::default()
+            }).insert(boat);
+        }
         cell_map.0.insert(cell.position, cell.get());
         if cell.strength > max_strength {
             max_strength = cell.strength;
@@ -417,9 +424,34 @@ fn update_cell_map_system(mut cell_map: ResMut<MapData>, mut game_data: ResMut<G
     });
     game_data.max_age = max_age;
     game_data.max_strength = max_strength;
+    game_data.send_boats = !game_data.send_boats;
 
     //print time duration of update
     //println!("Update took {:?}", start.elapsed());
+}
+
+fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Boat, &mut Transform)>, mut grid: ResMut<MapData>) {
+    query.iter_mut().for_each(|(entity, mut boat, mut transform)| {
+        let position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
+        //check if we've hit land
+        if let Some(cell) = grid.0.get_mut(&(position.0 as usize, position.1 as usize)) {
+            //add boat empire and strength to the vec at the end of the cell data
+            cell.8.insert(position, (boat.empire, boat.strength));
+            println!("Boat has arrived at ({}, {})", position.0, position.1);
+            //remove the boat
+            commands.entity(entity).despawn();
+            //let count = grid.0.get(&(position.0 as usize, position.1 as usize)).unwrap().8.len();
+            //println!("This cell has recieved {} boats", count);
+        } else {
+            transform.translation = Vec3::new(position.0 as f32, position.1 as f32, 0.0);
+        }
+        if transform.translation.x < 0.0 || transform.translation.x >= WIDTH as f32 {//loop around the world
+            transform.translation.x = (WIDTH as f32 - 1.0) - transform.translation.x.abs();
+        }
+        if transform.translation.y < 0.0 || transform.translation.y >= HEIGHT as f32 {
+            commands.entity(entity).despawn();
+        }
+    });
 }
 
 fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
@@ -431,6 +463,7 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
     query.par_iter_mut().for_each(|mut cell| {//iterate through all cells on many threads
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
+        let boat_data = cell_map.0.get(&(position.0, position.1)).unwrap().8.clone();
         for i in 0..9 {//iterate through the 8 possible neighbor positions
             let mut neighbor_x:i32 = (position.0 as i32) + i % 3 - 1;
             let neighbor_y:i32 = (position.1 as i32) + i / 3 - 1;
@@ -449,6 +482,13 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
             if let Some(neighbor) = cell_map.0.get(&(neighbor_x as usize, neighbor_y as usize)) {
                 data.push((neighbor.0, neighbor.1, neighbor.2, neighbor.3, neighbor.4, neighbor.5, neighbor.6));
             }
+        }
+        for (position, boat) in boat_data.iter() {
+            data.push((*position, boat.0, boat.1, 0.0, *position, boat.1, boat.0));
+            println!("Added boat to data for cell at ({}, {})", position.0, position.1);
+        }
+        if boat_data.len() > 0 {
+            println!("This cell has recieved {} boats", boat_data.len());
         }
         let mut tech = 0.0;
         if cell.empire != -1 {
@@ -497,78 +537,87 @@ fn update_render_mode_system(keyboard_input: Res<ButtonInput<KeyCode>>, mut rend
     }
 }
 
+
+
 fn update_colors(
     grid: Res<Grid>,
     cell_map: Res<MapData>,
     render_mode: Res<RenderMode>,
     game_data: Res<GameData>,
-    mut query: Query<(&Transform, &mut Sprite)>,
+    mut query: Query<(&Transform, &mut Sprite, Option<&CellMarker>)>,
 ) {
     // Collect query results into a vector
     //let start = Instant::now();
-    let mut query_results: Vec<(&Transform, Mut<Sprite>)> = query.iter_mut().collect();
+    let mut query_results: Vec<(&Transform, Mut<Sprite>, Option<&CellMarker>)> = query.iter_mut().collect();
     let max_strength: f32 = game_data.max_strength;
 
     // Use Rayon to iterate over the vector in parallel
-    query_results.par_iter_mut().for_each(|(transform,ref mut sprite)| {
+    query_results.par_iter_mut().for_each(|(transform,ref mut sprite, cell_marker)| {
         let x = transform.translation.x as usize;
         let y = transform.translation.y as usize;
-        let terrain = &grid.data[x][y];
-        let max_age = game_data.max_age as f32;
+        if !(x >= WIDTH || y >= HEIGHT) && cell_marker.is_some() {
+            //check if cell_marker is Some, which means it's not a boat.
 
-        //some grid spots don't have cells because they are ocean
-        //check if a cell exists at this position before trying to access it
-        //let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1));
+            let terrain = &grid.data[x][y];
+            let max_age = game_data.max_age as f32;
 
-        let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1, 0));
-        let color = if matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
-            if terrain[0] < OCEAN_CUTOFF {
-                //ocean
-                let brightness = terrain[0] / 2.0 + OCEAN_CUTOFF / 2.0;//cell[0] + 0.01 / (cell[0].sqrt());
-                Color::hsla(240.0, 1.0, brightness, 1.0)
+            //some grid spots don't have cells because they are ocean
+            //check if a cell exists at this position before trying to access it
+            //let cell = cell_map.0.get(&(x, y)).unwrap_or(&((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1));
+
+            let cell = match cell_map.0.get(&(x, y)) {
+                Some(cell) => cell,
+                None => &((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1, 0, HashMap::new()),
+            };
+            let color = if matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
+                if terrain[0] < OCEAN_CUTOFF {
+                    //ocean
+                    let brightness = terrain[0] / 2.0 + OCEAN_CUTOFF / 2.0;//cell[0] + 0.01 / (cell[0].sqrt());
+                    Color::hsla(240.0, 1.0, brightness, 1.0)
+                } else {
+                    //land
+                    let brightness = terrain[0] / 3.0 + OCEAN_CUTOFF / 3.0;
+                    Color::hsla(100.0 + (terrain[0] - 0.5) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0 - (terrain[0] - OCEAN_CUTOFF).abs() + OCEAN_CUTOFF, brightness, 1.0)
+                }
             } else {
-                //land
-                let brightness = terrain[0] / 3.0 + OCEAN_CUTOFF / 3.0;
-                Color::hsla(100.0 + (terrain[0] - 0.5) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0 - (terrain[0] - OCEAN_CUTOFF).abs() + OCEAN_CUTOFF, brightness, 1.0)
-            }
-        } else {
-            //println!("Empire {} has strength {} and need {} at ({}, {})", cell.1, cell.2, cell.3, x, y);
-            let e_hue = cell_map.1[cell.1 as usize].0;
-            let e_sat = cell_map.1[cell.1 as usize].1;
-            match *render_mode {
-                RenderMode::StrengthView => {
-                    let brightness = ((cell.2 as f32 / max_strength) + cell.2 as f32 / 100.0) / 2.0;
-                    Color::hsla(e_hue, e_sat, brightness, 1.0)
-                }
-                RenderMode::EmpireView => {
-                    Color::hsla(e_hue, e_sat, 0.5, 1.0)
-                }
-                RenderMode::NeedView => {
-                    let brightness = cell.3 as f32 / 48.0;
-                    Color::hsla(e_hue, e_sat, brightness, 1.0)
-                }
-                RenderMode::SendView => {
-                    let lr = cell.4.0 - cell.0.0;
-                    let ud = cell.4.1 - cell.0.1;
-                    //lr and ud together are a vector of the direction the strength is being sent
-                    //hue should be the angle of the direction of that vector
-                    let mut angle = (ud as f32).atan2(lr as f32).to_degrees();
-                    if angle < 0.0 {
-                        angle += 360.0;
+                //println!("Empire {} has strength {} and need {} at ({}, {})", cell.1, cell.2, cell.3, x, y);
+                let e_hue = cell_map.1[cell.1 as usize].0;
+                let e_sat = cell_map.1[cell.1 as usize].1;
+                match *render_mode {
+                    RenderMode::StrengthView => {
+                        let brightness = ((cell.2 as f32 / max_strength) + cell.2 as f32 / 100.0) / 2.0;
+                        Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
-                    let hue = angle;
-                    let brightness = ((cell.5 as f32 / max_strength) + cell.5 as f32 / 100.0) / 2.0;
-                    Color::hsla(hue, 1.0, brightness, 1.0)
+                    RenderMode::EmpireView => {
+                        Color::hsla(e_hue, e_sat, 0.5, 1.0)
+                    }
+                    RenderMode::NeedView => {
+                        let brightness = cell.3 as f32 / 48.0;
+                        Color::hsla(e_hue, e_sat, brightness, 1.0)
+                    }
+                    RenderMode::SendView => {
+                        let lr = cell.4.0 - cell.0.0;
+                        let ud = cell.4.1 - cell.0.1;
+                        //lr and ud together are a vector of the direction the strength is being sent
+                        //hue should be the angle of the direction of that vector
+                        let mut angle = (ud as f32).atan2(lr as f32).to_degrees();
+                        if angle < 0.0 {
+                            angle += 360.0;
+                        }
+                        let hue = angle;
+                        let brightness = ((cell.5 as f32 / max_strength) + cell.5 as f32 / 100.0) / 2.0;
+                        Color::hsla(hue, 1.0, brightness, 1.0)
+                    }
+                    RenderMode::AgeView => {
+                        let brightness = (cell.7 as f32 / max_age).min(0.5);
+                        Color::hsla(e_hue, e_sat, brightness, 1.0)
+                    }
+                    _ => Color::WHITE,
                 }
-                RenderMode::AgeView => {
-                    let brightness = (cell.7 as f32 / max_age).min(0.5);
-                    Color::hsla(e_hue, e_sat, brightness, 1.0)
-                }
-                _ => Color::WHITE,
-            }
-        };
+            };
 
-        sprite.color = color;
+            sprite.color = color;
+        }
     });
     //println!("Render took {:?}", start.elapsed());
 }
