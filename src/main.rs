@@ -6,8 +6,8 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 50;
-const HEIGHT: usize = 9 * 50;
+const WIDTH: usize = 16 * 40;
+const HEIGHT: usize = 9 * 40;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.3;
 const EMPIRE_PROBABILITY: i32 = 1000;
@@ -444,7 +444,11 @@ fn update_cell_map_system(mut commands: Commands, mut cell_map: ResMut<MapData>,
 
 fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Boat, &mut Transform)>, mut grid: ResMut<MapData>) {
     query.iter_mut().for_each(|(entity, mut boat, mut transform)| {
-        let position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
+        let mut position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
+        if position.1 >= HEIGHT {
+            boat.direction.1 *= -1.0;
+            position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
+        }
         //check if we've hit land
         if let Some(cell) = grid.0.get_mut(&(position.0 as usize, position.1 as usize)) {
             //add boat empire and strength to the vec at the end of the cell data
@@ -459,9 +463,6 @@ fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Bo
         }
         if transform.translation.x < 0.0 || transform.translation.x >= WIDTH as f32 {//loop around the world
             transform.translation.x = (WIDTH as f32 - 1.0) - transform.translation.x.abs();
-        }
-        if transform.translation.y < 0.0 || transform.translation.y >= HEIGHT as f32 {
-            commands.entity(entity).despawn();
         }
     });
 }
