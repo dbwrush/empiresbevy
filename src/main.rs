@@ -6,12 +6,12 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 40;
-const HEIGHT: usize = 9 * 40;
+const WIDTH: usize = 16 * 30;
+const HEIGHT: usize = 9 * 30;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.3;
 const EMPIRE_PROBABILITY: i32 = 1000;
-const TERRAIN_IMPORTANCE: f32 = 0.999;
+const TERRAIN_IMPORTANCE: f32 = 0.2;
 const LOOP_DIST: usize = 100;
 const BOAT_PROP: f32 = 0.001;
 
@@ -94,7 +94,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
                 count += 1;
 
                 commands.spawn(Cell::new(x, y, terrain, empire));
-                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, 0, HashMap::new()));
+                entity_map.0.insert((x, y), ((x, y), empire, 0.0, 0.0, (0, 0), 0.0, empire, 0, HashMap::new(), 0.0));
             }
         }
     }
@@ -103,7 +103,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
 }
 
 #[derive(Resource)]
-struct MapData(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32, HashMap<(usize, usize), (i32, f32)>)>, Vec<(f32, f32, f32, f32)>);
+struct MapData(HashMap<(usize, usize), ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32, HashMap<(usize, usize), (i32, f32)>, f32)>, Vec<(f32, f32, f32, f32)>);
 //vec is empire data including hue, saturation, aggression, and tech factor
 
 
@@ -197,6 +197,7 @@ struct Cell {
     empire: i32,
     strength: f32,
     need: f32,
+    boat_need: f32,
     send_target: (usize, usize),
     send_amount: f32,
     send_empire: i32,
@@ -214,6 +215,7 @@ impl Cell {
             empire,
             strength: terrain,
             need: 0.0,
+            boat_need: 0.0,
             send_target: (x, y),
             send_amount: 0.0,
             send_empire: empire,
@@ -225,9 +227,9 @@ impl Cell {
         }
     }
 
-    fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32, HashMap<(usize, usize), (i32, f32)>) {
+    fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32, HashMap<(usize, usize), (i32, f32)>, f32) {
         //0 = position, 1 = empire, 2 = strength, 3 = need, 4 = send_target, 5 = send_amount, 6 = send_empire
-        (self.position, self.empire, self.strength, self.need, self.send_target, self.send_amount, self.send_empire, self.age, HashMap::new())
+        (self.position, self.empire, self.strength, self.need, self.send_target, self.send_amount, self.send_empire, self.age, HashMap::new(), self.boat_need)
     }
 
     //neighbors are the 8 cells surrounding this cell, accessible through the hashmap.
@@ -237,7 +239,8 @@ impl Cell {
         let mut max_need_position = self.position;
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = self.position;
-        self.need = 0.0;
+        self.boat_need *= 0.9;
+        self.need = (self.boat_need as f32).sqrt();
         self.send_target = self.position;
         self.send_amount = 0.0;
         self.send_empire = self.empire;
@@ -246,7 +249,7 @@ impl Cell {
         if self.empire == -1 {
             return;
         } else {
-            self.need += coastlines.len() as f32 / 8.0;
+            self.boat_need += (coastlines.len() as f32)/self.age as f32;
         }
 
         for i in 0..data.len() {
@@ -290,15 +293,16 @@ impl Cell {
         }
         self.need += max_need * 0.999999;
         self.strength -= self.send_amount;
-        self.ocean_need_prop = coastlines.len() as f32 / self.need;
-        if coastlines.len() > 0 && self.ocean_need_prop > 1.0 - BOAT_PROP && self.strength > 1.0 / BOAT_PROP {
+        if coastlines.len() > 0 && self.boat_need > 1.0 && self.strength > 1.0 / BOAT_PROP {
             self.boat_target = coastlines[rand::thread_rng().gen_range(0..coastlines.len())];
             self.boat_strength = self.strength * self.ocean_need_prop;
+            self.boat_strength = self.boat_strength.max(self.strength);
             self.strength -= self.boat_strength;
+            //println!("Attempting to launch boat from ({}, {}) with strength {}", self.position.0, self.position.1, self.boat_strength);
         }
     }
 
-    fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, tech: f32) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
+    fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, tech: f32, boat_attacks: f32) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
         // Check the send_ variables of all neighbors to see if they are sending strength to this cell
         //self.empire = grid_data.0;
         //self.strength = grid_data.1;
@@ -334,6 +338,7 @@ impl Cell {
             // Multiply strength by 0.99 so it can't just go up forever.
             self.strength *= terrain_factor;
             self.need *= 1.0 - (self.terrain * TERRAIN_IMPORTANCE / 1.3);
+            self.boat_need += boat_attacks;
             self.age += 1;
         }
     }
@@ -477,6 +482,7 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
         let boat_data = cell_map.0.get(&(position.0, position.1)).unwrap().8.clone();
+        let mut boat_attacks = 0.0;
         for i in 0..9 {//iterate through the 8 possible neighbor positions
             let mut neighbor_x:i32 = (position.0 as i32) + i % 3 - 1;
             let neighbor_y:i32 = (position.1 as i32) + i / 3 - 1;
@@ -498,6 +504,9 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         }
         for (position, boat) in boat_data.iter() {
             data.push((*position, boat.0, boat.1, 0.0, *position, boat.1, boat.0));
+            if boat.0 != cell.empire {
+                boat_attacks += boat.1;
+            }
             //println!("Added boat to data for cell at ({}, {})", position.0, position.1);
         }
         if boat_data.len() > 0 {
@@ -507,7 +516,7 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         if cell.empire != -1 {
             tech = cell_map.1[cell.empire as usize].3;
         }
-        cell.pull(data, tech);
+        cell.pull(data, tech, boat_attacks);
     });
 
     //print time duration of pull
@@ -531,6 +540,7 @@ enum RenderMode {
     NeedView,
     SendView,
     AgeView,
+    BoatNeedView,
     // Add more render modes here
 }
 
@@ -547,6 +557,8 @@ fn update_render_mode_system(keyboard_input: Res<ButtonInput<KeyCode>>, mut rend
         *render_mode = RenderMode::SendView;
     } else if keyboard_input.just_pressed(KeyCode::Digit6) {
         *render_mode = RenderMode::AgeView;
+    } else if keyboard_input.just_pressed(KeyCode::Digit7) {
+        *render_mode = RenderMode::BoatNeedView;
     }
 }
 
@@ -580,7 +592,7 @@ fn update_colors(
 
             let cell = match cell_map.0.get(&(x, y)) {
                 Some(cell) => cell,
-                None => &((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1, 0, HashMap::new()),
+                None => &((0, 0), -1, 0.0, 0.0, (0, 0), 0.0, -1, 0, HashMap::new(), 0.0),
             };
             let color = if matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
                 if terrain[0] < OCEAN_CUTOFF {
@@ -602,10 +614,10 @@ fn update_colors(
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::EmpireView => {
-                        Color::hsla(e_hue, e_sat, 0.5, 1.0)
+                        Color::hsla(e_hue, e_sat, terrain[0]/2.0 + 0.25, 1.0)
                     }
                     RenderMode::NeedView => {
-                        let brightness = cell.3 as f32 / 48.0;
+                        let brightness = cell.3.sqrt() / 48.0;
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::SendView => {
@@ -623,6 +635,10 @@ fn update_colors(
                     }
                     RenderMode::AgeView => {
                         let brightness = (cell.7 as f32 / max_age).min(0.5);
+                        Color::hsla(e_hue, e_sat, brightness, 1.0)
+                    }
+                    RenderMode::BoatNeedView => {
+                        let brightness = cell.9 as f32 / 48.0;
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     _ => Color::WHITE,
