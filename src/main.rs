@@ -6,12 +6,12 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 30;
-const HEIGHT: usize = 9 * 30;
+const WIDTH: usize = 16 * 20;
+const HEIGHT: usize = 9 * 20;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.3;
-const EMPIRE_PROBABILITY: i32 = 1000;
-const TERRAIN_IMPORTANCE: f32 = 0.2;
+const EMPIRE_PROBABILITY: i32 = 10;
+const TERRAIN_IMPORTANCE: f32 = 0.9;
 const LOOP_DIST: usize = 100;
 const BOAT_PROP: f32 = 0.001;
 
@@ -89,7 +89,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
                     empire = empire_count;
                     empire_count += 1;
                     //println!("Empire {} has been created at ({}, {})", empire, x, y);
-                    entity_map.1.push((rand::thread_rng().gen_range(0..360) as f32, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, 1.0));
+                    entity_map.1.push((rand::thread_rng().gen_range(0..360) as f32, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, f32::MIN));
                 }
                 count += 1;
 
@@ -206,6 +206,8 @@ struct Cell {
     ocean_need_prop: f32,
     boat_target: (usize, usize),
     boat_strength: f32,
+    terrain_factor: f32,
+    need_factor: f32,
 }
 
 impl Cell {
@@ -224,6 +226,8 @@ impl Cell {
             ocean_need_prop: 0.0,
             boat_target: (0, 0),
             boat_strength: 0.0,
+            terrain_factor: (1.0 - ((terrain - OCEAN_CUTOFF) / (1.0 - OCEAN_CUTOFF))) * TERRAIN_IMPORTANCE + (1.0 - TERRAIN_IMPORTANCE).powf(2.0),
+            need_factor: 1.0 - (terrain * TERRAIN_IMPORTANCE / 2.0),
         }
     }
 
@@ -239,7 +243,7 @@ impl Cell {
         let mut max_need_position = self.position;
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = self.position;
-        self.boat_need *= 0.9;
+        self.boat_need *= 0.99;
         self.need = (self.boat_need as f32).sqrt();
         self.send_target = self.position;
         self.send_amount = 0.0;
@@ -249,8 +253,10 @@ impl Cell {
         if self.empire == -1 {
             return;
         } else {
-            self.boat_need += (coastlines.len() as f32)/self.age as f32;
+            self.boat_need += (coastlines.len() as f32)/self.age as f32 / 10.0;
         }
+
+        let mut friendly_neighbors = 0;
 
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
@@ -258,10 +264,11 @@ impl Cell {
                     continue;
                 }
                 if self.empire == neighbor_cell.1 {
-                   if neighbor_cell.3 > max_need {
+                    if neighbor_cell.3 > max_need {
                         max_need = neighbor_cell.3;
                         max_need_position = neighbor_cell.0;
                     }
+                    friendly_neighbors += 1;
                 } else {
                     if neighbor_cell.2 > max_enemy_strength {
                         max_enemy_strength = neighbor_cell.2;
@@ -271,17 +278,17 @@ impl Cell {
                         min_enemy_position = neighbor_cell.0;
                     }
                     if neighbor_cell.1 != self.empire {
-                        self.need += 1.0;
+                        self.need += 10.0;
                     }
                     if neighbor_cell.1 == -1 {
-                        self.need -= 0.9;
+                        self.need -= 9.0;
                     } else if neighbor_cell.2 > self.strength {
-                        self.need += 3.0;
+                        self.need += 30.0;
                     }
                 }
             }
         }
-       let extra = self.strength - max_enemy_strength / 3.0;
+        let extra = self.strength - max_enemy_strength / 3.0;
         if extra > 0.0 {
             if extra > (3.0 * (1.0 - aggression)) * min_enemy_strength && min_enemy_position != self.position {
                 self.send_target = min_enemy_position;
@@ -300,6 +307,7 @@ impl Cell {
             self.strength -= self.boat_strength;
             //println!("Attempting to launch boat from ({}, {}) with strength {}", self.position.0, self.position.1, self.boat_strength);
         }
+        self.strength *= (coastlines.len() + friendly_neighbors) as f32 / 8.0;
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, tech: f32, boat_attacks: f32) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -322,6 +330,8 @@ impl Cell {
                     //println!("Empire {} is attacking cell ({}, {}) from ({}, {})", neighbor_cell.6, self.position.0, self.position.1, neighbor_cell.0.0, neighbor_cell.0.1);
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
                         self.age = 0;
+                        //set boat need to be based on the number of coastline neighbors (i.e., 8 - data.len())
+                        self.boat_need = 8.0 - data.len() as f32;
                         self.empire = neighbor_cell.6;
                         //println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
                         self.strength = neighbor_cell.5 / 3.0 - self.strength;
@@ -333,11 +343,10 @@ impl Cell {
         }
         if self.empire != -1 {
             // Use terrain data from the grid to determine how much strength this cell should generate. The closer to ocean level, the more strength is made.
-            let terrain_factor = ((1.0 - ((OCEAN_CUTOFF - self.terrain).abs() / (1.0 - OCEAN_CUTOFF))) * TERRAIN_IMPORTANCE + (1.0 - TERRAIN_IMPORTANCE) + tech).min(1.0);
-            self.strength += terrain_factor;
+            self.strength += (self.terrain_factor + tech.powf(2.0)).min(1.0);
             // Multiply strength by 0.99 so it can't just go up forever.
-            self.strength *= terrain_factor;
-            self.need *= 1.0 - (self.terrain * TERRAIN_IMPORTANCE / 1.3);
+            self.strength *= (self.terrain_factor + tech.powf(2.0)).min(1.0);
+            self.need *= self.need_factor;
             self.boat_need += boat_attacks;
             self.age += 1;
         }
@@ -526,8 +535,8 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
 fn update_empires(mut cell_map: ResMut<MapData>) {
     //iterate through all empires in cell_map.1, give each a small chance to have a slight boost to tech factor
     for i in 0..cell_map.1.len() {
-        if rand::thread_rng().gen_range(0..1000000000) < 1 {
-            cell_map.1[i].3 += 0.000000000001;
+        if rand::thread_rng().gen_range(0..i32::MAX) < 1 {
+            cell_map.1[i].3 += 0.0000000000000001;
         }
     }
 }
@@ -614,10 +623,10 @@ fn update_colors(
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::EmpireView => {
-                        Color::hsla(e_hue, e_sat, terrain[0]/2.0 + 0.25, 1.0)
+                        Color::hsla(e_hue, e_sat, terrain[0]/4.0 + 0.25, 1.0)
                     }
                     RenderMode::NeedView => {
-                        let brightness = cell.3.sqrt() / 48.0;
+                        let brightness = cell.3.sqrt() / 24.0;
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::SendView => {
@@ -634,7 +643,7 @@ fn update_colors(
                         Color::hsla(hue, 1.0, brightness, 1.0)
                     }
                     RenderMode::AgeView => {
-                        let brightness = (cell.7 as f32 / max_age).min(0.5);
+                        let brightness = ((cell.7 as f32 / max_age) * 0.5).min(0.5);
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::BoatNeedView => {
