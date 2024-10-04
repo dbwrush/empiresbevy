@@ -6,12 +6,13 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 20;
-const HEIGHT: usize = 9 * 20;
+const WIDTH: usize = 16 * 30;
+const HEIGHT: usize = 9 * 30;
 const VARIABLES: usize = 4; // Terrain, strength, empire
-const OCEAN_CUTOFF: f32 = 0.3;
+const OCEAN_CUTOFF: f32 = 0.4;
 const EMPIRE_PROBABILITY: i32 = 10;
-const TERRAIN_IMPORTANCE: f32 = 0.9;
+const TERRAIN_NEED: f32 = 0.3;
+const TERRAIN_STRENGTH: f32 = 0.9;
 const LOOP_DIST: usize = 100;
 const BOAT_PROP: f32 = 0.001;
 
@@ -73,13 +74,14 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
     for x in 0..WIDTH {
         for y in 0..HEIGHT {
             let terrain = grid.data[x][y][0];
+            let offset:f32 = (y % 2) as f32 / 2.0; //offset every other row by 0.5 for a hex grid.
             commands.spawn(SpriteBundle {
                 sprite: Sprite {
                     color: Color::WHITE,
                     custom_size: Some(Vec2::new(1.0, 1.0)),
                     ..Default::default()
                 },
-                transform: Transform::from_xyz(x as f32, y as f32, 0.0),
+                transform: Transform::from_xyz(x as f32 + offset, y as f32, 0.0),
                 ..Default::default()
             }).insert(CellMarker);
             if terrain > OCEAN_CUTOFF {
@@ -127,7 +129,7 @@ impl Grid {
         let noise2 = Simplex::new(rng.gen::<u32>());
         let noise3 = Simplex::new(rng.gen::<u32>());
         
-        data.iter_mut().enumerate().for_each(|(x, row)| {
+        data.par_iter_mut().enumerate().for_each(|(x, row)| {
             row.iter_mut().enumerate().for_each(|(y, cell)| {
                 let mut elevation = get_elevation(noise, noise2, noise3, x, y);
                 if x < LOOP_DIST || x > WIDTH - LOOP_DIST {
@@ -140,8 +142,7 @@ impl Grid {
                     let opp_elevation = get_elevation(noise, noise2, noise3, opp_x, y);
                     elevation = elevation * (1.0 - opp_prop) + opp_elevation * opp_prop;
                 }
-                cell[0] = (elevation + 1.0) / 2.0;
-                cell[1] = -1.0;
+                cell[0] = elevation;
             });
         });
 
@@ -150,7 +151,22 @@ impl Grid {
 }
 
 fn get_elevation(noise: Simplex, noise2: Simplex, noise3: Simplex, x: usize, y: usize) -> f32 {
-    return noise.get([x as f64 / 200.0, y as f64 / 200.0]) as f32 * 2.0 + noise.get([x as f64 / 100.0, y as f64 / 100.0]) as f32 + noise2.get([x as f64 / 50.0, y as f64 / 50.0]) as f32 / 2.0 + noise3.get([x as f64 / 25.0, y as f64 / 25.0]) as f32 / 4.0 + noise3.get([x as f64 / 12.5, y as f64 / 12.5]) as f32 / 8.0;
+    let mut x = x as f32;
+    if y % 2 == 1 {
+        //offset x by .5;
+        x += 0.5;
+    }
+    let mut e = noise.get([x as f64 / 128.0, y as f64 / 128.0]) as f32 * 16.0 + 
+    noise.get([x as f64 / 64.0, y as f64 / 64.0]) as f32 * 8.0 + 
+    noise2.get([x as f64 / 32.0, y as f64 / 32.0]) as f32 * 4.0 + 
+    noise3.get([x as f64 / 16.0, y as f64 / 16.0]) as f32 * 2.0 + 
+    noise3.get([x as f64 / 8.0, y as f64 / 8.0]) as f32;
+    e /= 64.0;
+    e += 0.5;
+    if e > 1.0 || e < 0.0 {
+        println!("WTF? Exceed at ({}, {}) with {}", x, y, e);
+    }
+    e
 }
 
 #[derive(Component)]
@@ -212,7 +228,7 @@ struct Cell {
 
 impl Cell {
     fn new(x: usize, y: usize, terrain: f32, empire: i32) -> Self {
-        Cell {            
+        let c = Cell {            
             position: (x, y),
             empire,
             strength: terrain,
@@ -226,9 +242,10 @@ impl Cell {
             ocean_need_prop: 0.0,
             boat_target: (0, 0),
             boat_strength: 0.0,
-            terrain_factor: (1.0 - ((terrain - OCEAN_CUTOFF) / (1.0 - OCEAN_CUTOFF))) * TERRAIN_IMPORTANCE + (1.0 - TERRAIN_IMPORTANCE).powf(2.0),
-            need_factor: 1.0 - (terrain * TERRAIN_IMPORTANCE / 2.0),
-        }
+            terrain_factor: ((1.0 - ((terrain - OCEAN_CUTOFF) / (1.0 - OCEAN_CUTOFF))).powf(1.0 + 4.0 * TERRAIN_STRENGTH) * TERRAIN_STRENGTH + (1.0 - TERRAIN_STRENGTH)),
+            need_factor: (((-terrain) / (1.0 - OCEAN_CUTOFF)) + (1.0 / (1.0 - OCEAN_CUTOFF))) * TERRAIN_NEED + (1.0 - TERRAIN_NEED),
+        };
+        c
     }
 
     fn get(& self) -> ((usize, usize), i32, f32, f32, (usize, usize), f32, i32, u32, HashMap<(usize, usize), (i32, f32)>, f32) {
@@ -244,7 +261,7 @@ impl Cell {
         let mut min_enemy_strength = 0.0;
         let mut min_enemy_position = self.position;
         self.boat_need *= 0.99;
-        self.need = (self.boat_need as f32).sqrt();
+        self.need = (self.boat_need as f32).sqrt() / 100.0;
         self.send_target = self.position;
         self.send_amount = 0.0;
         self.send_empire = self.empire;
@@ -255,7 +272,6 @@ impl Cell {
         } else {
             self.boat_need += (coastlines.len() as f32)/self.age as f32 / 10.0;
         }
-
         let mut friendly_neighbors = 0;
 
         for i in 0..data.len() {
@@ -278,12 +294,12 @@ impl Cell {
                         min_enemy_position = neighbor_cell.0;
                     }
                     if neighbor_cell.1 != self.empire {
-                        self.need += 10.0;
+                        self.need += 1.0 * neighbor_cell.2;
                     }
                     if neighbor_cell.1 == -1 {
-                        self.need -= 9.0;
+                        self.need -= 0.9 * neighbor_cell.2;
                     } else if neighbor_cell.2 > self.strength {
-                        self.need += 30.0;
+                        self.need += 3.0 * neighbor_cell.2;
                     }
                 }
             }
@@ -298,16 +314,16 @@ impl Cell {
                 self.send_amount = extra * 0.5;
             }
         }
-        self.need += max_need * 0.999999;
+        self.need += max_need * 0.9;
         self.strength -= self.send_amount;
-        if coastlines.len() > 0 && self.boat_need > 1.0 && self.strength > 1.0 / BOAT_PROP {
+        if coastlines.len() > 0 && self.boat_need > 1.0 && (self.strength > 1.0 / BOAT_PROP || rand::thread_rng().gen_range(0..1000) < 1) {
             self.boat_target = coastlines[rand::thread_rng().gen_range(0..coastlines.len())];
             self.boat_strength = self.strength * self.ocean_need_prop;
             self.boat_strength = self.boat_strength.max(self.strength);
             self.strength -= self.boat_strength;
             //println!("Attempting to launch boat from ({}, {}) with strength {}", self.position.0, self.position.1, self.boat_strength);
         }
-        self.strength *= (coastlines.len() + friendly_neighbors) as f32 / 8.0;
+        self.strength *= (coastlines.len() + friendly_neighbors) as f32 / 6.0;
     }
 
     fn pull(&mut self, data: Vec<((usize, usize), i32, f32, f32, (usize, usize), f32, i32)>, tech: f32, boat_attacks: f32) {//I call this 'pull' because the cell is pulling the decisions from other cells to update its own data
@@ -330,8 +346,8 @@ impl Cell {
                     //println!("Empire {} is attacking cell ({}, {}) from ({}, {})", neighbor_cell.6, self.position.0, self.position.1, neighbor_cell.0.0, neighbor_cell.0.1);
                     if self.strength - neighbor_cell.5 / 3.0 < 0.0 {
                         self.age = 0;
-                        //set boat need to be based on the number of coastline neighbors (i.e., 8 - data.len())
-                        self.boat_need = 8.0 - data.len() as f32;
+                        //set boat need to be based on the number of coastline neighbors (i.e., 6 - data.len())
+                        self.boat_need = 6.0 - data.len() as f32;
                         self.empire = neighbor_cell.6;
                         //println!("Empire {} has taken cell ({}, {})", self.empire, self.position.0, self.position.1);
                         self.strength = neighbor_cell.5 / 3.0 - self.strength;
@@ -363,9 +379,29 @@ fn push_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         let position = cell.position;//get cell's position
         let mut data = Vec::new();//initialize data to be sent to cell.push
         let mut ocean = Vec::new();
-        for i in 0..9 {//iterate through the 8 possible neighbor positions
-            let mut neighbor_x:i32 = (position.0 as i32) + i % 3 - 1;
-            let neighbor_y:i32 = (position.1 as i32) + i / 3 - 1;
+        for i in 0..6 {//iterate through the 6 possible neighbor positions
+            let (mut neighbor_x, mut neighbor_y): (i32, i32) = (position.0 as i32, position.1 as i32);
+            if position.1 % 2 == 0 { // even row
+                match i {
+                    0 => { neighbor_x -= 1; neighbor_y -= 1; } // (x-1, y-1)
+                    1 => { neighbor_y -= 1; }                  // (x, y-1)
+                    2 => { neighbor_x -= 1; }                  // (x-1, y)
+                    3 => { neighbor_x += 1; }                  // (x+1, y)
+                    4 => { neighbor_x -= 1; neighbor_y += 1; } // (x-1, y+1)
+                    5 => { neighbor_y += 1; }                  // (x, y+1)
+                    _ => {}
+                }
+            } else { // odd row
+                match i {
+                    0 => { neighbor_y -= 1; }                  // (x, y-1)
+                    1 => { neighbor_x += 1; neighbor_y -= 1; } // (x+1, y-1)
+                    2 => { neighbor_x -= 1; }                  // (x-1, y)
+                    3 => { neighbor_x += 1; }                  // (x+1, y)
+                    4 => { neighbor_y += 1; }                  // (x, y+1)
+                    5 => { neighbor_x += 1; neighbor_y += 1; } // (x+1, y+1)
+                    _ => {}
+                }
+            }
             if neighbor_x < 0 {
                 neighbor_x += WIDTH as i32;
             }
@@ -492,9 +528,29 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
         let mut data = Vec::new();//initialize data to be sent to cell.push
         let boat_data = cell_map.0.get(&(position.0, position.1)).unwrap().8.clone();
         let mut boat_attacks = 0.0;
-        for i in 0..9 {//iterate through the 8 possible neighbor positions
-            let mut neighbor_x:i32 = (position.0 as i32) + i % 3 - 1;
-            let neighbor_y:i32 = (position.1 as i32) + i / 3 - 1;
+        for i in 0..6 {//iterate through the 6 possible neighbor positions
+            let (mut neighbor_x, mut neighbor_y): (i32, i32) = (position.0 as i32, position.1 as i32);
+            if position.1 % 2 == 0 { // even row
+                match i {
+                    0 => { neighbor_x -= 1; neighbor_y -= 1; } // (x-1, y-1)
+                    1 => { neighbor_y -= 1; }                  // (x, y-1)
+                    2 => { neighbor_x -= 1; }                  // (x-1, y)
+                    3 => { neighbor_x += 1; }                  // (x+1, y)
+                    4 => { neighbor_x -= 1; neighbor_y += 1; } // (x-1, y+1)
+                    5 => { neighbor_y += 1; }                  // (x, y+1)
+                    _ => {}
+                }
+            } else { // odd row
+                match i {
+                    0 => { neighbor_y -= 1; }                  // (x, y-1)
+                    1 => { neighbor_x += 1; neighbor_y -= 1; } // (x+1, y-1)
+                    2 => { neighbor_x -= 1; }                  // (x-1, y)
+                    3 => { neighbor_x += 1; }                  // (x+1, y)
+                    4 => { neighbor_y += 1; }                  // (x, y+1)
+                    5 => { neighbor_x += 1; neighbor_y += 1; } // (x+1, y+1)
+                    _ => {}
+                }
+            }
             if neighbor_x < 0 {
                 neighbor_x += WIDTH as i32;
             }
@@ -536,7 +592,7 @@ fn update_empires(mut cell_map: ResMut<MapData>) {
     //iterate through all empires in cell_map.1, give each a small chance to have a slight boost to tech factor
     for i in 0..cell_map.1.len() {
         if rand::thread_rng().gen_range(0..i32::MAX) < 1 {
-            cell_map.1[i].3 += 0.0000000000000001;
+            //cell_map.1[i].3 += 0.0000000000000001;
         }
     }
 }
@@ -606,12 +662,12 @@ fn update_colors(
             let color = if matches!(*render_mode, RenderMode::TerrainView) || cell.1 == -1 {
                 if terrain[0] < OCEAN_CUTOFF {
                     //ocean
-                    let brightness = terrain[0] / 2.0 + OCEAN_CUTOFF / 2.0;//cell[0] + 0.01 / (cell[0].sqrt());
+                    let brightness = terrain[0] / 1.5;//cell[0] + 0.01 / (cell[0].sqrt());
                     Color::hsla(240.0, 1.0, brightness, 1.0)
                 } else {
                     //land
-                    let brightness = terrain[0] / 3.0 + OCEAN_CUTOFF / 3.0;
-                    Color::hsla(100.0 + (terrain[0] - 0.5) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0 - (terrain[0] - OCEAN_CUTOFF).abs() + OCEAN_CUTOFF, brightness, 1.0)
+                    let brightness = terrain[0] / 1.6;
+                    Color::hsla(110.0 + (terrain[0]) * 30.0 * (1.0 / OCEAN_CUTOFF), 1.0 - (terrain[0]-OCEAN_CUTOFF) * 2.5, brightness, 1.0)
                 }
             } else {
                 //println!("Empire {} has strength {} and need {} at ({}, {})", cell.1, cell.2, cell.3, x, y);
@@ -623,10 +679,13 @@ fn update_colors(
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::EmpireView => {
-                        Color::hsla(e_hue, e_sat, terrain[0]/4.0 + 0.25, 1.0)
+                        Color::hsla(e_hue, e_sat, terrain[0]/2.0 + 0.25, 1.0)
                     }
                     RenderMode::NeedView => {
-                        let brightness = cell.3.sqrt() / 24.0;
+                        let mut brightness = cell.3.sqrt() / 64.0;
+                        if brightness < 0.0 {
+                            brightness = 100.0;
+                        }
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::SendView => {
