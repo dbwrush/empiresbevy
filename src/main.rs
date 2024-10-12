@@ -12,9 +12,10 @@ const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
 const EMPIRE_PROBABILITY: i32 = 10;
 const TERRAIN_NEED: f32 = 0.3;
-const TERRAIN_STRENGTH: f32 = 0.9;
+const TERRAIN_STRENGTH: f32 = 0.6;
 const LOOP_DIST: usize = 100;
-const BOAT_PROP: f32 = 0.001;
+const BOAT_PROP: f32 = 0.03;
+const TECH_GAIN: f32 = 0.001;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -91,7 +92,7 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
                     empire = empire_count;
                     empire_count += 1;
                     //println!("Empire {} has been created at ({}, {})", empire, x, y);
-                    entity_map.1.push((rand::thread_rng().gen_range(0..360) as f32, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, f32::MIN));
+                    entity_map.1.push((rand::thread_rng().gen_range(0..360) as f32, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, 0.0));
                 }
                 count += 1;
 
@@ -273,6 +274,7 @@ impl Cell {
             self.boat_need += (coastlines.len() as f32)/self.age as f32 / 10.0;
         }
         let mut friendly_neighbors = 0;
+        let mut enemy_neighbors = 0;
 
         for i in 0..data.len() {
             if let Some(neighbor_cell) = data.get(i) {
@@ -286,6 +288,7 @@ impl Cell {
                     }
                     friendly_neighbors += 1;
                 } else {
+                    enemy_neighbors += 1;
                     if neighbor_cell.2 > max_enemy_strength {
                         max_enemy_strength = neighbor_cell.2;
                     }
@@ -295,11 +298,9 @@ impl Cell {
                     }
                     if neighbor_cell.1 != self.empire {
                         self.need += 1.0 * neighbor_cell.2;
-                    }
-                    if neighbor_cell.1 == -1 {
-                        self.need -= 0.9 * neighbor_cell.2;
-                    } else if neighbor_cell.2 > self.strength {
-                        self.need += 3.0 * neighbor_cell.2;
+                        if neighbor_cell.1 == -1 {
+                            self.need -= 0.9 * neighbor_cell.2;
+                        }
                     }
                 }
             }
@@ -314,7 +315,14 @@ impl Cell {
                 self.send_amount = extra * 0.5;
             }
         }
+        if enemy_neighbors > 0 {
+            self.need /= enemy_neighbors as f32;
+        }
+        if self.need > self.strength {
+            self.need -= self.strength;
+        }
         self.need += max_need * 0.9;
+        self.need *= self.need_factor;
         self.strength -= self.send_amount;
         if coastlines.len() > 0 && self.boat_need > 1.0 && (self.strength > 1.0 / BOAT_PROP || rand::thread_rng().gen_range(0..1000) < 1) {
             self.boat_target = coastlines[rand::thread_rng().gen_range(0..coastlines.len())];
@@ -362,7 +370,6 @@ impl Cell {
             self.strength += (self.terrain_factor + tech.powf(2.0)).min(1.0);
             // Multiply strength by 0.99 so it can't just go up forever.
             self.strength *= (self.terrain_factor + tech.powf(2.0)).min(1.0);
-            self.need *= self.need_factor;
             self.boat_need += boat_attacks;
             self.age += 1;
         }
@@ -591,8 +598,9 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
 fn update_empires(mut cell_map: ResMut<MapData>) {
     //iterate through all empires in cell_map.1, give each a small chance to have a slight boost to tech factor
     for i in 0..cell_map.1.len() {
-        if rand::thread_rng().gen_range(0..i32::MAX) < 1 {
-            //cell_map.1[i].3 += 0.0000000000000001;
+        if rand::thread_rng().gen_range(0..10000) < 1 {
+            cell_map.1[i].3 += TECH_GAIN;
+            println!("Empire {} has increased tech factor to {}", i, cell_map.1[i].3);
         }
     }
 }
@@ -606,6 +614,7 @@ enum RenderMode {
     SendView,
     AgeView,
     BoatNeedView,
+    TechView,
     // Add more render modes here
 }
 
@@ -624,10 +633,10 @@ fn update_render_mode_system(keyboard_input: Res<ButtonInput<KeyCode>>, mut rend
         *render_mode = RenderMode::AgeView;
     } else if keyboard_input.just_pressed(KeyCode::Digit7) {
         *render_mode = RenderMode::BoatNeedView;
+    } else if keyboard_input.just_pressed(KeyCode::Digit8) {
+        *render_mode = RenderMode::TechView;
     }
 }
-
-
 
 fn update_colors(
     grid: Res<Grid>,
@@ -673,16 +682,17 @@ fn update_colors(
                 //println!("Empire {} has strength {} and need {} at ({}, {})", cell.1, cell.2, cell.3, x, y);
                 let e_hue = cell_map.1[cell.1 as usize].0;
                 let e_sat = cell_map.1[cell.1 as usize].1;
+                let e_tech = cell_map.1[cell.1 as usize].3;
                 match *render_mode {
                     RenderMode::StrengthView => {
-                        let brightness = ((cell.2 as f32 / max_strength) + cell.2 as f32 / 100.0) / 2.0;
+                        let brightness = ((cell.2 as f32 / max_strength.sqrt()) + cell.2 as f32 / 100.0) / 2.0;
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::EmpireView => {
-                        Color::hsla(e_hue, e_sat, terrain[0]/2.0 + 0.25, 1.0)
+                        Color::hsla(e_hue, e_sat, terrain[0] * 0.8, 1.0)
                     }
                     RenderMode::NeedView => {
-                        let mut brightness = cell.3.sqrt() / 64.0;
+                        let mut brightness = cell.3.sqrt() / 32.0;
                         if brightness < 0.0 {
                             brightness = 100.0;
                         }
@@ -708,6 +718,9 @@ fn update_colors(
                     RenderMode::BoatNeedView => {
                         let brightness = cell.9 as f32 / 48.0;
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
+                    }
+                    RenderMode::TechView => {
+                        Color::hsla(e_hue, e_sat / 10.0, e_tech.sqrt() * 4.0, 1.0)
                     }
                     _ => Color::WHITE,
                 }
