@@ -11,10 +11,10 @@ const HEIGHT: usize = 9 * 30;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
 const EMPIRE_PROBABILITY: i32 = 10;
-const TERRAIN_NEED: f32 = 0.3;
-const TERRAIN_STRENGTH: f32 = 0.6;
+const TERRAIN_NEED: f32 = 0.001;
+const TERRAIN_STRENGTH: f32 = 0.65;
 const LOOP_DIST: usize = 100;
-const BOAT_PROP: f32 = 0.03;
+const BOAT_PROP: f32 = 0.05;
 const TECH_GAIN: f32 = 0.001;
 
 fn main() {
@@ -305,6 +305,13 @@ impl Cell {
                 }
             }
         }
+
+        if friendly_neighbors == 0 && rand::thread_rng().gen_range(0..10) < 1 {
+            //destroy empire
+            self.empire = -1;
+            return;
+        }
+
         let extra = self.strength - max_enemy_strength / 3.0;
         if extra > 0.0 {
             if extra > (3.0 * (1.0 - aggression)) * min_enemy_strength && min_enemy_position != self.position {
@@ -318,9 +325,9 @@ impl Cell {
         if enemy_neighbors > 0 {
             self.need /= enemy_neighbors as f32;
         }
-        if self.need > self.strength {
+        /*if self.need > self.strength {
             self.need -= self.strength;
-        }
+        }*/
         self.need += max_need * 0.9;
         self.need *= self.need_factor;
         self.strength -= self.send_amount;
@@ -699,17 +706,62 @@ fn update_colors(
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::SendView => {
-                        let lr = cell.4.0 - cell.0.0;
-                        let ud = cell.4.1 - cell.0.1;
-                        //lr and ud together are a vector of the direction the strength is being sent
-                        //hue should be the angle of the direction of that vector
-                        let mut angle = (ud as f32).atan2(lr as f32).to_degrees();
-                        if angle < 0.0 {
-                            angle += 360.0;
+                        //cell.4 is the send_target's coordinates. cell.0 is the cell's coordinates
+                        //every other row of cells is offset by 0.5, so we need to account for that
+                        //goal is to color the cell based on the direction from the cell to the send_target
+                        //since the cells are arranged hexagonally, each direction lines up with either a primary or secondary color.
+
+                        let (x, y) = cell.0;
+                        let (tx, ty) = cell.4;
+                        let mut dx = tx as i32 - x as i32;
+                        let dy = ty as i32 - y as i32;
+                        //account for every other row being offset by 0.5, so each cell has 2 options above and below.
+                        //this means one of those 2 options will have the same x coordinate.
+                        /* how it's done elsewhere in the code
+                        EVEN ROW
+                        0 = x-1, y-1
+                        1 = x, y-1
+                        2 = x+1, y
+                        3 = x, y+1
+                        4 = x-1, y+1
+                        5 = x-1, y
+                        
+                        ODD ROW
+                        0 = x, y-1
+                        1 = x+1, y-1
+                        2 = x+1, y
+                        3 = x+1, y+1
+                        4 = x, y+1
+                        5 = x-1, y
+                        */
+                        let angle;
+                        if dy == 0 {
+                            if dx > 0 {
+                                angle = 0.0;
+                            } else {
+                                angle = 180.0;
+                            }
+                        } else {
+                            if y % 2 == 1 {
+                                dx -= 1;
+                            }
+                            //from here on odd and even rows are treated the same
+                            if dy > 0 {
+                                if dx > 0 {
+                                    angle = 60.0;
+                                } else {
+                                    angle = 120.0;
+                                }
+                            } else {
+                                if dx > 0 {
+                                    angle = 300.0;
+                                } else {
+                                    angle = 240.0;
+                                }
+                            }
                         }
-                        let hue = angle;
-                        let brightness = ((cell.5 as f32 / max_strength) + cell.5 as f32 / 100.0) / 2.0;
-                        Color::hsla(hue, 1.0, brightness, 1.0)
+                        let brightness = (cell.5 as f32 / max_strength.sqrt()) + 0.1;
+                        Color::hsla(angle, 1.0, brightness, 1.0)
                     }
                     RenderMode::AgeView => {
                         let brightness = ((cell.7 as f32 / max_age) * 0.5).min(0.5);
