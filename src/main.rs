@@ -11,18 +11,18 @@ const HEIGHT: usize = 9 * 30;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.4;
 const EMPIRE_PROBABILITY: i32 = 10;
-const TERRAIN_NEED: f32 = 0.001;
-const TERRAIN_STRENGTH: f32 = 0.65;
+const TERRAIN_NEED: f32 = 0.9;
+const TERRAIN_STRENGTH: f32 = 0.7;
 const LOOP_DIST: usize = 100;
 const BOAT_PROP: f32 = 0.05;
-const TECH_GAIN: f32 = 0.001;
+const TECH_GAIN: f32 = 0.01;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
     let mut app = App::new();
     app.add_plugins(DefaultPlugins);
     app.add_systems(Startup, setup);
-    app.add_systems(Update, (update_colors, draw_fps, update_render_mode_system, update_empires));
+    app.add_systems(Update, (update_colors, draw_fps, update_render_mode_system, update_empires, update_camera_system));
     app.add_systems(PreUpdate, (update_boats_system.before(pull_system), pull_system.before(update_cell_map_system), update_cell_map_system));
     app.add_systems(PostUpdate, (push_system.before(update_cell_map_system), update_cell_map_system));
     app.insert_resource(RenderMode::AgeView);
@@ -610,6 +610,39 @@ fn update_empires(mut cell_map: ResMut<MapData>) {
             println!("Empire {} has increased tech factor to {}", i, cell_map.1[i].3);
         }
     }
+}
+
+//function to take the camera and use keyboard input to move or zoom it.
+fn update_camera_system(mut query: Query<&mut Transform, With<Camera2d>>, keyboard_input: Res<ButtonInput<KeyCode>>) {
+    let mut camera_transform = query.iter_mut().next().unwrap();
+    let mut translation = camera_transform.translation;
+    let mut scale = camera_transform.scale.x;
+    let mut move_speed = 1.0;
+    let mut zoom_speed = 0.2;
+    if keyboard_input.pressed(KeyCode::ShiftLeft) {
+        move_speed = 2.0;
+        zoom_speed = 0.4;
+    }
+    if keyboard_input.pressed(KeyCode::KeyW) {
+        translation.y += move_speed;
+    }
+    if keyboard_input.pressed(KeyCode::KeyS) {
+        translation.y -= move_speed;
+    }
+    if keyboard_input.pressed(KeyCode::KeyA) {
+        translation.x -= move_speed;
+    }
+    if keyboard_input.pressed(KeyCode::KeyD) {
+        translation.x += move_speed;
+    }
+    if keyboard_input.pressed(KeyCode::KeyQ) {
+        scale -= zoom_speed;
+    }
+    if keyboard_input.pressed(KeyCode::KeyE) {
+        scale += zoom_speed;
+    }
+    camera_transform.translation = translation;
+    camera_transform.scale = Vec3::new(scale, scale, 1.0);
 }
 
 #[derive(Resource)]
