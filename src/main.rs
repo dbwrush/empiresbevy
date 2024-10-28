@@ -9,13 +9,13 @@ use std::env;
 const WIDTH: usize = 16 * 30;
 const HEIGHT: usize = 9 * 30;
 const VARIABLES: usize = 4; // Terrain, strength, empire
-const OCEAN_CUTOFF: f32 = 0.4;
+const OCEAN_CUTOFF: f32 = 0.5;
 const EMPIRE_PROBABILITY: i32 = 10;
 const TERRAIN_NEED: f32 = 0.9;
-const TERRAIN_STRENGTH: f32 = 0.7;
+const TERRAIN_STRENGTH: f32 = 0.65;
 const LOOP_DIST: usize = 100;
 const BOAT_PROP: f32 = 0.05;
-const TECH_GAIN: f32 = 0.01;
+const TECH_GAIN: f32 = 0.001;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -175,36 +175,70 @@ struct CellMarker;
 
 #[derive(Component)]
 struct Boat {
-    direction: (f32, f32),
+    direction: u8,
     strength: f32,
     empire: i32,
 }
 
 impl Boat {
-    fn move_boat(&mut self, mut position: (i32, i32)) -> (usize, usize) {
+    fn move_boat(&mut self, mut position: (i32, i32)) -> (i32, i32) {
         //use direction values to decide if boat moves on one axis or both randomly
         //if direction value is negative, that means the boat is moving in the negative direction
-        if rand::thread_rng().gen_range(0..1000) as f32 / 1000.0 < self.direction.0.abs() {
-            if self.direction.0 > 0.0 {
-                position.0 += 1;
-            } else {
-                position.0 -= 1;
+        let mut use_direction = self.direction;
+        //small chance to add or remove 1 from use_direction;
+        if rand::thread_rng().gen_range(0..10) < 1 {
+            use_direction += 1;
+            if use_direction > 5 {
+                use_direction = 0;
+            }
+        } else if rand::thread_rng().gen_range(0..10) < 1 {
+            use_direction -= 1;
+            if use_direction > 5 {
+                use_direction = 5;
             }
         }
-        if rand::thread_rng().gen_range(0..1000) as f32 / 1000.0 < self.direction.1.abs() {
-            if self.direction.1 > 0.0 {
-                position.1 += 1;
-            } else {
-                position.1 -= 1;
+        
+                /*EVEN
+                (-1, -1) => 0,
+                (0, -1) => 1,
+                (1, 0) => 3,
+                (0, 1) => 5,
+                (-1, 1) => 4,
+                (-1, 0) => 2,
+                _ => 0, */
+
+                /*ODD
+                (0, -1) => 0,
+                (1, -1) => 1,
+                (1, 0) => 3,
+                (1, 1) => 5,
+                (0, 1) => 4,
+                (-1, 0) => 2,
+                _ => 0, */
+
+        //check if we're on an even or odd row (due to hexagonal grid)
+        if position.1 % 2 == 0 {//even
+            match use_direction {
+                0 => { position.0 -= 1; position.1 -= 1; } // (x-1, y-1)
+                1 => { position.1 -= 1; }                  // (x, y-1)
+                2 => { position.0 += 1; }                  // (x-1, y)
+                3 => { position.1 += 1; }                  // (x+1, y)
+                4 => { position.0 -= 1; position.1 += 1; } // (x-1, y+1)
+                5 => { position.0 -= 1; }                  // (x, y+1)
+                _ => {}
+            }
+        } else {//odd
+            match use_direction {
+                0 => { position.1 -= 1; }                  // (x, y-1)
+                1 => { position.0 += 1; position.1 -= 1; } // (x+1, y-1)
+                2 => { position.0 -= 1; }                  // (x-1, y)
+                3 => { position.0 += 1; position.1 += 1; }                  // (x+1, y)
+                4 => { position.1 += 1; }                  // (x, y+1)
+                5 => { position.0 -= 1;} // (x+1, y+1)
+                _ => {}
             }
         }
-        if position.0 >= WIDTH as i32 {
-            position.0 -= WIDTH as i32;
-        }
-        if position.0 < 0 {
-            position.0 += WIDTH as i32;
-        }
-        return (position.0 as usize, position.1 as usize);
+        return (position.0, position.1);
     }
 }
 
@@ -459,22 +493,32 @@ fn update_cell_map_system(mut commands: Commands, mut cell_map: ResMut<MapData>,
     query.iter().for_each(|cell| {
         if game_data.send_boats && cell.empire != -1 && cell.boat_strength > 0.0 {
             let spawn_location = cell.boat_target;
-            let mut direction = (
-                (spawn_location.0 as i32 - cell.position.0 as i32) as f32,
-                (spawn_location.1 as i32 - cell.position.1 as i32) as f32
-            );
-            if direction == (1.0, 1.0) {
-                direction = (0.5, 0.5);
+            
+            //due to hexagonal grid, it should be one of 6 directions (0 - 5 inclusive)
+            //direction should be based on the position of the boat relative to the cell that spawned it.
+            let mut dx = spawn_location.0 as i32 - cell.position.0 as i32;
+            let dy = spawn_location.1 as i32 - cell.position.1 as i32;
+            if dy != 0 && cell.position.1 % 2 == 1 {//make odd rows and even rows functionally equal.
+                dx -= 1;
             }
-            if direction.0 > direction.1 {
-                let a = (rand::thread_rng().gen_range(0..500) as f32 / 1000.0 - 0.25) * direction.0;
-                direction.0 -= a;
-                direction.1 += a;
-            } else {
-                let a = (rand::thread_rng().gen_range(0..500) as f32 / 1000.0 - 0.25) * direction.1;
-                direction.1 -= a;
-                direction.0 += a;
-            }
+
+                /*EVEN
+                (-1, -1) => 0,
+                (0, -1) => 1,
+                (1, 0) => 3,
+                (0, 1) => 5,
+                (-1, 1) => 4,
+                (-1, 0) => 2,
+                _ => 0, */
+            let direction = match (dx, dy) {
+                (-1, -1) => 0,
+                (0, -1) => 1,
+                (1, 0) => 2,
+                (0, 1) => 3,
+                (-1, 1) => 4,
+                (-1, 0) => 5,
+                _ => 0,
+            };
             let boat = Boat {
                 direction,
                 strength: cell.boat_strength,
@@ -508,15 +552,25 @@ fn update_cell_map_system(mut commands: Commands, mut cell_map: ResMut<MapData>,
 
 fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Boat, &mut Transform)>, mut grid: ResMut<MapData>) {
     query.iter_mut().for_each(|(entity, mut boat, mut transform)| {
-        let mut position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
-        if position.1 >= HEIGHT {
-            boat.direction.1 *= -1.0;
+        let mut position:(i32, i32) = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
+        if position.1 >= HEIGHT as i32 || position.1 < 0 {
+            //println!("Flipping direction! {}", position.1);
+            match boat.direction {
+                0 => { boat.direction = 4; }
+                1 => { boat.direction = 3; }
+                2 => { boat.direction = 2; }
+                3 => { boat.direction = 1; }
+                4 => { boat.direction = 0; }
+                5 => { boat.direction = 5; }
+                _ => {}
+            }
             position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
+            //println!("New y: {}", position.1);
         }
         //check if we've hit land
         if let Some(cell) = grid.0.get_mut(&(position.0 as usize, position.1 as usize)) {
             //add boat empire and strength to the vec at the end of the cell data
-            cell.8.insert(position, (boat.empire, boat.strength));
+            cell.8.insert((position.0 as usize, position.1 as usize), (boat.empire, boat.strength));
             //println!("Boat has arrived at ({}, {})", position.0, position.1);
             //remove the boat
             commands.entity(entity).despawn();
@@ -525,8 +579,10 @@ fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Bo
         } else {
             transform.translation = Vec3::new(position.0 as f32, position.1 as f32, 0.0);
         }
-        if transform.translation.x < 0.0 || transform.translation.x >= WIDTH as f32 {//loop around the world
-            transform.translation.x = (WIDTH as f32 - 1.0) - transform.translation.x.abs();
+        if transform.translation.x < 0.0 {//loop around the world
+            transform.translation.x = transform.translation.x + WIDTH as f32 - 1.0;
+        } else if transform.translation.x >= WIDTH as f32 {
+            transform.translation.x = transform.translation.x - WIDTH as f32;
         }
     });
 }
@@ -607,7 +663,7 @@ fn update_empires(mut cell_map: ResMut<MapData>) {
     for i in 0..cell_map.1.len() {
         if rand::thread_rng().gen_range(0..10000) < 1 {
             cell_map.1[i].3 += TECH_GAIN;
-            println!("Empire {} has increased tech factor to {}", i, cell_map.1[i].3);
+            //println!("Empire {} has increased tech factor to {}", i, cell_map.1[i].3);
         }
     }
 }
