@@ -6,13 +6,13 @@ use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
 
-const WIDTH: usize = 16 * 30;
-const HEIGHT: usize = 9 * 30;
+const WIDTH: usize = 16 * 40;
+const HEIGHT: usize = 9 * 40;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.5;
 const EMPIRE_PROBABILITY: i32 = 10;
-const TERRAIN_NEED: f32 = 0.9;
-const TERRAIN_STRENGTH: f32 = 0.65;
+const TERRAIN_NEED: f32 = 0.7;
+const TERRAIN_STRENGTH: f32 = 0.5;
 const LOOP_DIST: usize = 100;
 const BOAT_PROP: f32 = 0.05;
 const TECH_GAIN: f32 = 0.001;
@@ -564,8 +564,10 @@ fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Bo
                 5 => { boat.direction = 5; }
                 _ => {}
             }
-            position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
-            //println!("New y: {}", position.1);
+            while position.1 >= HEIGHT as i32 || position.1 < 0 {
+                position = boat.move_boat((transform.translation.x as i32, transform.translation.y as i32));
+                //println!("New y: {}", position.1);
+            }
         }
         //check if we've hit land
         if let Some(cell) = grid.0.get_mut(&(position.0 as usize, position.1 as usize)) {
