@@ -5,17 +5,19 @@ use rand::Rng;
 use rayon::prelude::*;
 use std::time::Instant;
 use std::env;
+use std::sync::Mutex; // Import Mutex for thread-safe updates
 
 const WIDTH: usize = 16 * 40;
 const HEIGHT: usize = 9 * 40;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.5;
-const EMPIRE_PROBABILITY: i32 = 10;
-const TERRAIN_NEED: f32 = 0.7;
-const TERRAIN_STRENGTH: f32 = 0.5;
-const LOOP_DIST: usize = 100;
-const BOAT_PROP: f32 = 0.05;
+const EMPIRE_PROBABILITY: i32 = 1;
+const TERRAIN_NEED: f32 = 0.99;
+const TERRAIN_STRENGTH: f32 = 0.7;
+const LOOP_DIST: usize = 10;
+const BOAT_PROP: f32 = 0.0001;
 const TECH_GAIN: f32 = 0.001;
+const START_TECH_RANGE: f32 = 0.01;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -92,7 +94,8 @@ fn setup(mut commands: Commands, mut windows: Query<&mut Window, With<PrimaryWin
                     empire = empire_count;
                     empire_count += 1;
                     //println!("Empire {} has been created at ({}, {})", empire, x, y);
-                    entity_map.1.push((rand::thread_rng().gen_range(0..360) as f32, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, 0.0));
+                    let starting_tech = rand::thread_rng().gen_range(0.0..START_TECH_RANGE);
+                    entity_map.1.push((rand::thread_rng().gen_range(0..360) as f32, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, rand::thread_rng().gen_range(0..1000) as f32 / 1000.0, starting_tech));
                 }
                 count += 1;
 
@@ -178,9 +181,19 @@ struct Boat {
     direction: u8,
     strength: f32,
     empire: i32,
+    tech_bonus: f32, // New field for tech influence
 }
 
 impl Boat {
+    fn new(direction: u8, strength: f32, empire: i32, tech: f32) -> Self {
+        Boat {
+            direction,
+            strength: strength * (1.0 + tech), // Scale strength by tech
+            empire,
+            tech_bonus: tech,
+        }
+    }
+
     fn move_boat(&mut self, mut position: (i32, i32)) -> (i32, i32) {
         //use direction values to decide if boat moves on one axis or both randomly
         //if direction value is negative, that means the boat is moving in the negative direction
@@ -519,11 +532,12 @@ fn update_cell_map_system(mut commands: Commands, mut cell_map: ResMut<MapData>,
                 (-1, 0) => 5,
                 _ => 0,
             };
-            let boat = Boat {
+            let boat = Boat::new(
                 direction,
-                strength: cell.boat_strength,
-                empire: cell.empire,
-            };
+                cell.boat_strength,
+                cell.empire,
+                cell_map.1[cell.empire as usize].3,
+            );
             commands.spawn(SpriteBundle {
                 sprite: Sprite {
                     color: Color::hsla(cell_map.1[cell.empire as usize].0, cell_map.1[cell.empire as usize].1, 0.5, 1.0),
@@ -572,14 +586,15 @@ fn update_boats_system(mut commands: Commands, mut query: Query<(Entity, &mut Bo
         //check if we've hit land
         if let Some(cell) = grid.0.get_mut(&(position.0 as usize, position.1 as usize)) {
             //add boat empire and strength to the vec at the end of the cell data
-            cell.8.insert((position.0 as usize, position.1 as usize), (boat.empire, boat.strength));
+            cell.8.insert((position.0 as usize, position.1 as usize), (boat.empire, boat.strength * (boat.tech_bonus + 1.0)));
             //println!("Boat has arrived at ({}, {})", position.0, position.1);
             //remove the boat
             commands.entity(entity).despawn();
             //let count = grid.0.get(&(position.0 as usize, position.1 as usize)).unwrap().8.len();
             //println!("This cell has recieved {} boats", count);
         } else {
-            transform.translation = Vec3::new(position.0 as f32, position.1 as f32, 0.0);
+            let x_offset = if position.1 % 2 == 0 { 0.0 } else { 0.5 };
+            transform.translation = Vec3::new(position.0 as f32 + x_offset, position.1 as f32, 0.0);
         }
         if transform.translation.x < 0.0 {//loop around the world
             transform.translation.x = transform.translation.x + WIDTH as f32 - 1.0;
@@ -660,13 +675,31 @@ fn pull_system(mut query: Query<&mut Cell>, cell_map: Res<MapData>) {
     //println!("Pull took {:?}", start.elapsed());
 }
 
-fn update_empires(mut cell_map: ResMut<MapData>) {
-    //iterate through all empires in cell_map.1, give each a small chance to have a slight boost to tech factor
-    for i in 0..cell_map.1.len() {
-        if rand::thread_rng().gen_range(0..10000) < 1 {
-            cell_map.1[i].3 += TECH_GAIN;
-            //println!("Empire {} has increased tech factor to {}", i, cell_map.1[i].3);
+fn update_empires(mut cell_map: ResMut<MapData>, query: Query<&Cell>) {
+    // Use a thread-safe Mutex to collect tech updates
+    let tech_updates = Mutex::new(Vec::new());
+
+    // Iterate through all cells in parallel
+    query.par_iter().for_each(|cell| {
+        if cell.empire != -1 {
+            // Calculate the probability of tech growth based on cell properties
+            let mut tech_probability = (cell.strength / 100.0 + (cell.age as f32 / 100.0)) * TECH_GAIN;
+
+            tech_probability = tech_probability.clamp(0.0, 1.0); // Ensure it's between 0 and 1
+
+            // Roll for tech growth
+            if rand::thread_rng().gen_bool(tech_probability as f64) {
+                // Collect the empire and tech gain in the Mutex
+                let mut updates = tech_updates.lock().unwrap();
+                updates.push((cell.empire as usize, TECH_GAIN));
+            }
         }
+    });
+
+    // Apply the collected updates to the cell_map
+    for (empire_index, tech_gain) in tech_updates.into_inner().unwrap() {
+        println!("Empire {} gained tech: {}, now at {}", empire_index, tech_gain, cell_map.1[empire_index].3 + tech_gain);
+        cell_map.1[empire_index].3 += tech_gain;
     }
 }
 
@@ -863,7 +896,7 @@ fn update_colors(
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::TechView => {
-                        Color::hsla(e_hue, e_sat / 10.0, e_tech.sqrt() * 4.0, 1.0)
+                        Color::hsla(e_hue, e_sat / 10.0, e_tech, 1.0)
                     }
                     _ => Color::WHITE,
                 }
