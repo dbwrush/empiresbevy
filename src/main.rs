@@ -7,17 +7,19 @@ use std::time::Instant;
 use std::env;
 use std::sync::Mutex; // Import Mutex for thread-safe updates
 
-const WIDTH: usize = 16 * 40;
-const HEIGHT: usize = 9 * 40;
+const WIDTH: usize = 16 * 30;
+const HEIGHT: usize = 9 * 30;
 const VARIABLES: usize = 4; // Terrain, strength, empire
 const OCEAN_CUTOFF: f32 = 0.5;
 const EMPIRE_PROBABILITY: i32 = 1;
 const TERRAIN_NEED: f32 = 0.99;
 const TERRAIN_STRENGTH: f32 = 0.7;
 const LOOP_DIST: usize = 10;
-const BOAT_PROP: f32 = 0.0001;
-const TECH_GAIN: f32 = 0.001;
+const BOAT_PROP: f32 = 0.001;
+const TECH_GAIN: f32 = 0.0001;
 const START_TECH_RANGE: f32 = 0.01;
+const MIN_BOAT_WAIT: u32 = 2;
+const MAX_TECH: f32 = 0.5;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -272,6 +274,7 @@ struct Cell {
     boat_strength: f32,
     terrain_factor: f32,
     need_factor: f32,
+    last_boat: u32,
 }
 
 impl Cell {
@@ -292,6 +295,7 @@ impl Cell {
             boat_strength: 0.0,
             terrain_factor: ((1.0 - ((terrain - OCEAN_CUTOFF) / (1.0 - OCEAN_CUTOFF))).powf(1.0 + 4.0 * TERRAIN_STRENGTH) * TERRAIN_STRENGTH + (1.0 - TERRAIN_STRENGTH)),
             need_factor: (((-terrain) / (1.0 - OCEAN_CUTOFF)) + (1.0 / (1.0 - OCEAN_CUTOFF))) * TERRAIN_NEED + (1.0 - TERRAIN_NEED),
+            last_boat: 0,
         };
         c
     }
@@ -314,6 +318,7 @@ impl Cell {
         self.send_amount = 0.0;
         self.send_empire = self.empire;
         self.boat_strength = 0.0;
+        self.last_boat += 1;
 
         if self.empire == -1 {
             return;
@@ -378,11 +383,12 @@ impl Cell {
         self.need += max_need * 0.9;
         self.need *= self.need_factor;
         self.strength -= self.send_amount;
-        if coastlines.len() > 0 && self.boat_need > 1.0 && (self.strength > 1.0 / BOAT_PROP || rand::thread_rng().gen_range(0..1000) < 1) {
+        if self.last_boat > MIN_BOAT_WAIT && coastlines.len() > 0 && self.boat_need > 1.0 && (self.strength > 1.0 / BOAT_PROP || rand::thread_rng().gen_range(0..1000) < 1) {
             self.boat_target = coastlines[rand::thread_rng().gen_range(0..coastlines.len())];
             self.boat_strength = self.strength * self.ocean_need_prop;
             self.boat_strength = self.boat_strength.max(self.strength);
             self.strength -= self.boat_strength;
+            self.last_boat = 0;
             //println!("Attempting to launch boat from ({}, {}) with strength {}", self.position.0, self.position.1, self.boat_strength);
         }
         self.strength *= (coastlines.len() + friendly_neighbors) as f32 / 6.0;
@@ -688,7 +694,7 @@ fn update_empires(mut cell_map: ResMut<MapData>, query: Query<&Cell>) {
             tech_probability = tech_probability.clamp(0.0, 1.0); // Ensure it's between 0 and 1
 
             // Roll for tech growth
-            if rand::thread_rng().gen_bool(tech_probability as f64) {
+            if tech_probability.is_finite() && rand::thread_rng().gen_bool(tech_probability as f64) {
                 // Collect the empire and tech gain in the Mutex
                 let mut updates = tech_updates.lock().unwrap();
                 updates.push((cell.empire as usize, TECH_GAIN));
@@ -698,8 +704,15 @@ fn update_empires(mut cell_map: ResMut<MapData>, query: Query<&Cell>) {
 
     // Apply the collected updates to the cell_map
     for (empire_index, tech_gain) in tech_updates.into_inner().unwrap() {
-        println!("Empire {} gained tech: {}, now at {}", empire_index, tech_gain, cell_map.1[empire_index].3 + tech_gain);
-        cell_map.1[empire_index].3 += tech_gain;
+        // Reduce the tech gain as the empire's tech level increases
+        let current_tech = cell_map.1[empire_index].3;
+        let adjusted_tech_gain = tech_gain * (1.0 - current_tech).clamp(0.0, 1.0);
+
+        // Apply the adjusted tech gain
+
+        cell_map.1[empire_index].3 = (adjusted_tech_gain + current_tech).min(MAX_TECH);
+
+        //println!("Empire {} gained tech: {}, now at {}", empire_index, adjusted_tech_gain, cell_map.1[empire_index].3);
     }
 }
 
