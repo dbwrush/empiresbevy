@@ -15,11 +15,12 @@ const EMPIRE_PROBABILITY: i32 = 1;
 const TERRAIN_NEED: f32 = 0.99;
 const TERRAIN_STRENGTH: f32 = 0.7;
 const LOOP_DIST: usize = 10;
-const BOAT_PROP: f32 = 0.001;
-const TECH_GAIN: f32 = 0.0001;
+const BOAT_PROP: f32 = 0.01;
+const TECH_GAIN: f32 = 0.001;
 const START_TECH_RANGE: f32 = 0.01;
 const MIN_BOAT_WAIT: u32 = 2;
-const MAX_TECH: f32 = 0.5;
+const MAX_TECH: f32 = 0.2;
+const TECH_DECAY: f32 = 0.000001;
 
 fn main() {
     env::set_var("RUST_BACKTRACE", "full");
@@ -687,9 +688,10 @@ fn update_empires(mut cell_map: ResMut<MapData>, query: Query<&Cell>) {
 
     // Iterate through all cells in parallel
     query.par_iter().for_each(|cell| {
-        if cell.empire != -1 {
+        // Check if the cell belongs to an empire and if the random chance for tech growth is met
+        if cell.empire != -1 && rand::thread_rng().gen_range(0..100) < 1 {
             // Calculate the probability of tech growth based on cell properties
-            let mut tech_probability = (cell.strength / 100.0 + (cell.age as f32 / 100.0)) * TECH_GAIN;
+            let mut tech_probability = (1.0 - (cell.age as f32 / 10000.0).min(1.0)) * TECH_GAIN;
 
             tech_probability = tech_probability.clamp(0.0, 1.0); // Ensure it's between 0 and 1
 
@@ -706,13 +708,18 @@ fn update_empires(mut cell_map: ResMut<MapData>, query: Query<&Cell>) {
     for (empire_index, tech_gain) in tech_updates.into_inner().unwrap() {
         // Reduce the tech gain as the empire's tech level increases
         let current_tech = cell_map.1[empire_index].3;
-        let adjusted_tech_gain = tech_gain * (1.0 - current_tech).clamp(0.0, 1.0);
+        let adjusted_tech_gain = tech_gain * (MAX_TECH - current_tech).clamp(0.0, 1.0);
 
         // Apply the adjusted tech gain
 
         cell_map.1[empire_index].3 = (adjusted_tech_gain + current_tech).min(MAX_TECH);
+        let percent = cell_map.1[empire_index].3 / MAX_TECH * 100.0;
+        println!("Empire {}\t gained tech: {:.9},\t now at {:.9}, \t {:.2}%", empire_index, adjusted_tech_gain, cell_map.1[empire_index].3, percent);
+    }
 
-        //println!("Empire {} gained tech: {}, now at {}", empire_index, adjusted_tech_gain, cell_map.1[empire_index].3);
+    for empire in &mut cell_map.1 {
+        empire.3 = (empire.3 - TECH_DECAY).max(0.0); // Apply decay to tech level. 
+        // Since amount is fixed and applied equally to all empires, this especially hurts stagnant empires.
     }
 }
 
@@ -829,7 +836,7 @@ fn update_colors(
                 let e_tech = cell_map.1[cell.1 as usize].3;
                 match *render_mode {
                     RenderMode::StrengthView => {
-                        let brightness = ((cell.2 as f32 / max_strength.sqrt()) + cell.2 as f32 / 100.0) / 2.0;
+                        let brightness = ((cell.2 as f32).ln() / max_strength.ln()).max(0.0);
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::EmpireView => {
@@ -909,7 +916,7 @@ fn update_colors(
                         Color::hsla(e_hue, e_sat, brightness, 1.0)
                     }
                     RenderMode::TechView => {
-                        Color::hsla(e_hue, e_sat / 10.0, e_tech, 1.0)
+                        Color::hsla(e_hue, e_sat / 10.0, e_tech / MAX_TECH, 1.0)
                     }
                     _ => Color::WHITE,
                 }
